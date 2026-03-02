@@ -1,6 +1,11 @@
 import type { Cursor, LoroEventBatch, LoroMap } from "loro-crdt";
-import { Fragment, Slice } from "prosemirror-model";
-import { type EditorState, Plugin, type StateField } from "prosemirror-state";
+import { Fragment, type Node as PmNode, Slice } from "prosemirror-model";
+import {
+  type EditorState,
+  Plugin,
+  type StateField,
+  TextSelection,
+} from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 
 import {
@@ -78,6 +83,18 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
                 props.containerId,
               );
             }
+            // Save Loro cursors while PM and Loro are in sync.
+            // Remote events will reuse these instead of converting stale PM
+            // positions against the already-imported Loro text.
+            {
+              const { anchor, focus } = convertPmSelectionToCursors(
+                newEditorState.doc,
+                newEditorState.selection,
+                state,
+              );
+              state.savedAnchor = anchor;
+              state.savedFocus = focus;
+            }
             break;
           case "update-state":
             state = { ...state, ...meta.state };
@@ -93,7 +110,14 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
       },
     } as StateField<LoroSyncPluginState>,
     appendTransaction: (transactions, _oldEditorState, newEditorState) => {
-      if (transactions.some((tr) => tr.docChanged)) {
+      if (
+        transactions.some(
+          (tr) =>
+            tr.docChanged &&
+            tr.getMeta(loroSyncPluginKey)?.type !== "non-local-updates" &&
+            tr.getMeta(loroSyncPluginKey)?.type !== "update-state",
+        )
+      ) {
         return newEditorState.tr.setMeta(loroSyncPluginKey, {
           type: "doc-changed",
         });
@@ -103,7 +127,29 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
     view: (view: EditorView) => {
       const timeoutId = setTimeout(() => init(view), 0);
       return {
-        update: (_view: EditorView, _prevState: EditorState) => {},
+        update: (view: EditorView, prevState: EditorState) => {
+          // Save Loro cursors on selection-only changes (Home/End/click) so
+          // savedAnchor is available before the first local "doc-changed" fires.
+          // Doc changes are handled in apply (doc-changed saves cursors there).
+          // When only the selection moves the doc hasn't changed, so PM ↔ Loro
+          // are still in sync and the cursor conversion is correct.
+          if (
+            view.state.doc === prevState.doc &&
+            !view.state.selection.eq(prevState.selection)
+          ) {
+            const state = loroSyncPluginKey.getState(
+              view.state,
+            ) as LoroSyncPluginState;
+            if (!state) return;
+            const { anchor, focus } = convertPmSelectionToCursors(
+              view.state.doc,
+              view.state.selection,
+              state,
+            );
+            state.savedAnchor = anchor;
+            state.savedFocus = focus;
+          }
+        },
         destroy: () => {
           clearTimeout(timeoutId);
         },
@@ -194,11 +240,13 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
       : (state.doc as LoroDocType).getMap(ROOT_DOC_KEY),
     mapping,
   );
-  const { anchor, focus } = convertPmSelectionToCursors(
-    view.state.doc,
-    view.state.selection,
-    state,
-  );
+  // Use saved cursors (captured when PM ↔ Loro were last in sync) rather than
+  // converting the current PM selection.  After doc.import() the Loro text
+  // already contains the remote characters but the PM document hasn't been
+  // rebuilt yet, so absolutePositionToCursor would resolve PM offsets against
+  // the wrong text length, placing the cursor at the wrong Fugue-tree node.
+  const anchor = state.savedAnchor;
+  const focus = state.savedFocus;
 
   let tr = view.state.tr.replace(
     0,
@@ -209,14 +257,58 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
   tr.setMeta(loroSyncPluginKey, {
     type: "non-local-updates",
   });
-  view.dispatch(tr);
 
-  if (anchor == null) {
-    return;
+  // Restore cursor in the same transaction to prevent keystrokes from
+  // landing at the wrong position between dispatch and a deferred fix.
+  // `state.doc` and `mapping` are already updated by clearChangedNodes +
+  // createNodeFromLoroObj above, so cursorToAbsolutePosition works here.
+  if (anchor != null) {
+    const sel = resolveLoroSelection(tr.doc, state.doc, mapping, anchor, focus);
+    if (sel) {
+      tr = tr.setSelection(sel);
+    }
   }
-  setTimeout(() => {
-    syncCursorsToPmSelection(view, anchor, focus);
-  });
+
+  view.dispatch(tr);
+}
+
+/**
+ * Resolve Loro stable cursors to a ProseMirror TextSelection against a
+ * given document. Returns null if the anchor cursor cannot be resolved
+ * or the positions are out of bounds.
+ */
+function resolveLoroSelection(
+  pmDoc: PmNode,
+  loroDoc: LoroDocType | LoroMap,
+  mapping: LoroNodeMapping,
+  anchor: Cursor,
+  focus?: Cursor,
+): TextSelection | null {
+  const anchorPos = cursorToAbsolutePosition(anchor, loroDoc, mapping)[0];
+  if (anchorPos == null) return null;
+
+  const focusPos = focus
+    ? cursorToAbsolutePosition(focus, loroDoc, mapping)[0]
+    : undefined;
+
+  const docSize = pmDoc.content.size;
+  // Bounds check matching safeSetSelection — reject rather than clamp
+  if (
+    anchorPos < 0 ||
+    anchorPos > docSize ||
+    (focusPos != null && (focusPos < 0 || focusPos > docSize))
+  ) {
+    return null;
+  }
+
+  try {
+    return TextSelection.between(
+      pmDoc.resolve(anchorPos),
+      pmDoc.resolve(focusPos ?? anchorPos),
+    );
+  } catch {
+    return null;
+  }
 }
 
 /**
