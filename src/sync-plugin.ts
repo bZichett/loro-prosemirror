@@ -274,8 +274,9 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
 
 /**
  * Resolve Loro stable cursors to a ProseMirror TextSelection against a
- * given document. Returns null if the anchor cursor cannot be resolved
- * or the positions are out of bounds.
+ * given document. Clamps positions to valid range rather than rejecting,
+ * so the cursor lands as close to the intended position as possible
+ * instead of silently resetting to the document start.
  */
 function resolveLoroSelection(
   pmDoc: PmNode,
@@ -292,21 +293,15 @@ function resolveLoroSelection(
     : undefined;
 
   const docSize = pmDoc.content.size;
-  // Bounds check matching safeSetSelection — reject rather than clamp
-  if (
-    anchorPos < 0 ||
-    anchorPos > docSize ||
-    (focusPos != null && (focusPos < 0 || focusPos > docSize))
-  ) {
-    return null;
-  }
+  const clamp = (pos: number) => Math.max(0, Math.min(pos, docSize));
 
   try {
     return TextSelection.between(
-      pmDoc.resolve(anchorPos),
-      pmDoc.resolve(focusPos ?? anchorPos),
+      pmDoc.resolve(clamp(anchorPos)),
+      pmDoc.resolve(clamp(focusPos ?? anchorPos)),
     );
-  } catch {
+  } catch (e) {
+    console.warn("resolveLoroSelection: failed to resolve cursor position", e);
     return null;
   }
 }
