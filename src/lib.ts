@@ -242,6 +242,76 @@ export function updateLoroText(
   );
 }
 
+/**
+ * Reconcile split-brain LoroTexts: when concurrent typing in the same paragraph
+ * creates multiple LoroTexts that map to a single PM text group.
+ *
+ * Key insight: writing the other peer's content into a LoroText creates CRDT
+ * operations that sync back, causing the other peer to also write duplicates,
+ * creating an exponential amplification loop. Instead, we diff the combined
+ * LoroText content against the PM text and apply ONLY the genuine local changes
+ * (new keystrokes) to the appropriate LoroText.
+ */
+function reconcileSplitBrainTexts(
+  loroTexts: LoroText[],
+  pmTextGroup: Node[],
+  mapping: LoroNodeMapping,
+): void {
+  // Delete mapping entries so createNodeFromLoroObj rebuilds each LoroText
+  // from its own delta.  Setting all LoroTexts to the merged text group would
+  // cause PM rebuilds to return the full merged text for EACH LoroText,
+  // doubling/tripling content and triggering exponential CRDT amplification.
+  for (const lt of loroTexts) {
+    mapping.delete(lt.id);
+  }
+
+  const combined = loroTexts.map((lt) => lt.toString()).join("");
+  const pmText = pmTextGroup.map((n) => n.text!).join("");
+
+  const { index, remove, insert } = simpleDiff(combined, pmText);
+  if (remove === 0 && insert.length === 0) return;
+
+  // Build cumulative offset boundaries: [0, len0, len0+len1, ...]
+  const boundaries: number[] = [0];
+  for (const lt of loroTexts) {
+    boundaries.push(boundaries[boundaries.length - 1] + lt.length);
+  }
+
+  // Apply deletion (may span multiple LoroTexts)
+  if (remove > 0) {
+    let pos = index;
+    let remaining = remove;
+    for (let i = 0; i < loroTexts.length && remaining > 0; i++) {
+      if (pos < boundaries[i + 1]) {
+        const localPos = pos - boundaries[i];
+        const count = Math.min(remaining, loroTexts[i].length - localPos);
+        if (count > 0) {
+          loroTexts[i].delete(localPos, count);
+          remaining -= count;
+          for (let j = i + 1; j <= loroTexts.length; j++) {
+            boundaries[j] -= count;
+          }
+        }
+        pos = boundaries[i + 1];
+      }
+    }
+  }
+
+  // Apply insertion to the LoroText that contains the target position
+  if (insert.length > 0) {
+    for (let i = 0; i < loroTexts.length; i++) {
+      if (index <= boundaries[i + 1] || i === loroTexts.length - 1) {
+        const localPos = Math.min(
+          index - boundaries[i],
+          loroTexts[i].length,
+        );
+        loroTexts[i].insert(localPos, insert);
+        break;
+      }
+    }
+  }
+}
+
 function nodeMarksToAttributes(marks: readonly Mark[]): {
   [key: string]: Attrs;
 } {
@@ -594,22 +664,50 @@ export function updateLoroMapChildren(
     }
   }
 
-  // try to compare and update
-  while (
-    loroChildLength - left - right > 0 &&
-    nodeChildLength - left - right > 0
-  ) {
-    const leftLoro = loroChildren.get(left);
-    const leftNode = nodeChildren[left];
-    const rightLoro = loroChildren.get(loroChildLength - right - 1);
-    const rightNode = nodeChildren[nodeChildLength - right - 1];
+  // Try to compare and update the mismatched middle region.
+  // Use separate Loro/PM indices because split-brain LoroTexts (concurrent
+  // typing creates multiple LoroTexts for one PM text group) break the 1:1
+  // child alignment the original shared-index loop assumed.
+  let loroLeft = left;
+  let pmLeft = left;
+  const loroMidEnd = loroChildLength - right;
+  const pmMidEnd = nodeChildLength - right;
+
+  while (loroLeft < loroMidEnd && pmLeft < pmMidEnd) {
+    const leftLoro = loroChildren.get(loroLeft);
+    const leftNode = nodeChildren[pmLeft];
 
     if (leftLoro instanceof LoroText && Array.isArray(leftNode)) {
-      if (!eqLoroTextNodes(leftLoro, leftNode)) {
-        updateLoroText(leftLoro, leftNode, mapping);
+      // Count consecutive LoroTexts (split-brain detection)
+      let splitCount = 1;
+      while (
+        loroLeft + splitCount < loroMidEnd &&
+        loroChildren.get(loroLeft + splitCount) instanceof LoroText
+      ) {
+        splitCount++;
       }
-      left += 1;
+
+      if (splitCount === 1) {
+        // Normal: single LoroText
+        if (!eqLoroTextNodes(leftLoro, leftNode)) {
+          updateLoroText(leftLoro, leftNode, mapping);
+        }
+      } else {
+        // Split-brain: multiple concurrent LoroTexts for one PM text group.
+        // Only write genuine local diffs to prevent CRDT amplification.
+        const loroTexts: LoroText[] = [];
+        for (let i = 0; i < splitCount; i++) {
+          loroTexts.push(loroChildren.get(loroLeft + i) as LoroText);
+        }
+        reconcileSplitBrainTexts(loroTexts, leftNode, mapping);
+      }
+
+      loroLeft += splitCount;
+      pmLeft += 1;
     } else {
+      const rightLoro = loroChildren.get(loroMidEnd - 1);
+      const rightNode = nodeChildren[pmMidEnd - 1];
+
       let updateLeft =
         leftLoro instanceof LoroMap && eqNodeName(leftLoro, leftNode);
       let updateRight =
@@ -644,24 +742,26 @@ export function updateLoroMapChildren(
 
       if (updateLeft) {
         updateLoroMap(leftLoro as LoroNode, leftNode as Node, mapping);
-        left += 1;
+        loroLeft += 1;
+        pmLeft += 1;
       } else if (updateRight) {
         updateLoroMap(rightLoro as LoroNode, rightNode as Node, mapping);
         right += 1;
       } else {
-        // recreate the element at left
-        const child = loroChildren.get(left);
+        // recreate the element at loroLeft
+        const child = loroChildren.get(loroLeft);
         if (isContainer(child)) {
           mapping.delete(child.id);
         }
-        loroChildren.delete(left, 1);
-        createLoroChild(loroChildren, left, leftNode, mapping);
-        left += 1;
+        loroChildren.delete(loroLeft, 1);
+        createLoroChild(loroChildren, loroLeft, leftNode, mapping);
+        loroLeft += 1;
+        pmLeft += 1;
       }
     }
   }
 
-  const loroDelLength = loroChildLength - left - right;
+  const loroSurplus = loroChildLength - right - loroLeft;
   if (
     loroChildLength === 1 &&
     nodeChildLength === 0 &&
@@ -672,20 +772,20 @@ export function updateLoroMapChildren(
     const loroText = loroChildren.get(0) as LoroText;
     mapping.delete(loroText.id);
     loroText.delete(0, loroText.length);
-  } else if (loroDelLength > 0) {
+  } else if (loroSurplus > 0) {
     loroChildren
       .toArray()
-      .slice(left, left + loroDelLength)
+      .slice(loroLeft, loroLeft + loroSurplus)
       .filter(isContainer)
       .forEach((type) => mapping.delete((type as LoroContainer).id));
-    loroChildren.delete(left, loroDelLength);
+    loroChildren.delete(loroLeft, loroSurplus);
   }
 
-  if (left + right < nodeChildLength) {
+  if (pmLeft < nodeChildLength - right) {
     nodeChildren
-      .slice(left, nodeChildLength - right)
+      .slice(pmLeft, nodeChildLength - right)
       .forEach((nodeChild, i) =>
-        createLoroChild(loroChildren, left + i, nodeChild, mapping),
+        createLoroChild(loroChildren, loroLeft + i, nodeChild, mapping),
       );
   }
 }

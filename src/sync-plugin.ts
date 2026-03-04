@@ -245,6 +245,8 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
   // already contains the remote characters but the PM document hasn't been
   // rebuilt yet, so absolutePositionToCursor would resolve PM offsets against
   // the wrong text length, placing the cursor at the wrong Fugue-tree node.
+  // For undo events, the undo plugin's onPop (which fires after this
+  // function) overwrites this cursor with the correct undo stack position.
   const anchor = state.savedAnchor;
   const focus = state.savedFocus;
 

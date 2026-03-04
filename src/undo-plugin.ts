@@ -109,21 +109,21 @@ export const LoroUndoPlugin = (props: LoroUndoPluginProps): Plugin => {
         };
       });
       undoManager.setOnPop((_isUndo, meta, _counterRange) => {
-        // After this call, the `onPush` will be called immediately.
-        // The immediate `onPush` will contain the inverse operations that undone the effect caused by the current `onPop`
+        // The Loro subscription (updateNodeOnLoroEvent) has already fired
+        // and rebuilt PM by the time onPop runs, so view.state has the
+        // undone document.  Set the undo cursor synchronously — no
+        // setTimeout gap where keystrokes could land at the wrong position.
         const loroState = loroSyncPluginKey.getState(view.state);
         if (loroState?.doc == null) {
           return;
         }
 
         const anchor: Cursor | undefined = meta.cursors[0];
-        const focus: Cursor | undefined = meta.cursors[1];
         if (anchor == null) {
           return;
         }
-        setTimeout(() => {
-          syncCursorsToPmSelection(view, anchor, focus);
-        }, 0);
+        const focus: Cursor | undefined = meta.cursors[1];
+        syncCursorsToPmSelection(view, anchor, focus);
       });
       return {
         destroy: () => {
