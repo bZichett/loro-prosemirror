@@ -56,6 +56,47 @@ export type LoroType = LoroContainer | Value;
 // See also: https://prosemirror.net/docs/guide/#doc.data_structures
 export type LoroNodeMapping = Map<ContainerID, Node | Node[]>;
 
+/**
+ * Reported when merged CRDT content cannot be expressed in the ProseMirror
+ * schema. The grammar's sublanguage is not closed under merge, so this is a
+ * normal (if rare) outcome of concurrent editing, not a programming error.
+ */
+export interface SchemaViolationInfo {
+  /** The Loro container whose content the schema rejected. */
+  containerId: ContainerID;
+  /** The `nodeName` recorded on the container, when it has one. */
+  nodeName?: string;
+  /** What ProseMirror raised. */
+  cause: unknown;
+}
+
+export interface RenderOptions {
+  /** Called once per container the schema refuses to build a node from. */
+  onSchemaViolation?: (info: SchemaViolationInfo) => void;
+  /** If provided, receives the id of every container that rendered to nothing. */
+  unrenderable?: Set<ContainerID>;
+}
+
+/**
+ * Marker stored in a {@link LoroNodeMapping} for a container that exists in the
+ * Loro document but produced no ProseMirror node, because the merged content
+ * violates the schema.
+ *
+ * It is deliberately kept in the mapping rather than deleted: the write-back
+ * path diffs the ProseMirror doc against the Loro doc and would otherwise read
+ * the absence as a user deletion and destroy the content for every peer.
+ * Compared by identity, so it can never collide with a genuinely empty text.
+ */
+const UNRENDERABLE = Object.freeze([]) as unknown as Node[];
+
+/** Whether `id` names a container that could not be rendered under the schema. */
+export function isUnrenderable(
+  mapping: LoroNodeMapping,
+  id: ContainerID,
+): boolean {
+  return mapping.get(id) === UNRENDERABLE;
+}
+
 export const ROOT_DOC_KEY = "doc";
 export const ATTRIBUTES_KEY = "attributes";
 export const CHILDREN_KEY = "children";
@@ -67,6 +108,20 @@ export const WEAK_NODE_TO_LORO_CONTAINER_MAPPING = new WeakMap<
   Node,
   ContainerID
 >();
+
+function reportViolation(
+  options: RenderOptions | undefined,
+  containerId: ContainerID,
+  nodeName: string | undefined,
+  cause: unknown,
+) {
+  options?.unrenderable?.add(containerId);
+  if (options?.onSchemaViolation) {
+    options.onSchemaViolation({ containerId, nodeName, cause });
+  } else {
+    console.error(cause);
+  }
+}
 
 export function updateLoroToPmState(
   doc: LoroDocType,
@@ -98,16 +153,19 @@ export function createNodeFromLoroObj(
   schema: Schema,
   obj: LoroNode,
   mapping: LoroNodeMapping,
+  options?: RenderOptions,
 ): Node;
 export function createNodeFromLoroObj(
   schema: Schema,
   obj: LoroText,
   mapping: LoroNodeMapping,
+  options?: RenderOptions,
 ): Node[];
 export function createNodeFromLoroObj(
   schema: Schema,
   obj: LoroNode | LoroText,
   mapping: LoroNodeMapping,
+  options?: RenderOptions,
 ): Node | Node[] | null {
   let retval: Node | Node[] | null = mapping.get(obj.id) ?? null;
   if (retval != null) {
@@ -125,16 +183,21 @@ export function createNodeFromLoroObj(
 
     const mappedChildren = children
       .toArray()
-      .flatMap((child) => createNodeFromLoroObj(schema, child as any, mapping))
+      .flatMap((child) =>
+        createNodeFromLoroObj(schema, child as any, mapping, options),
+      )
       .filter((n) => n !== null);
 
     try {
       retval = schema.node(nodeName, attributes.toJSON(), mappedChildren);
       WEAK_NODE_TO_LORO_CONTAINER_MAPPING.set(retval, obj.id);
     } catch (e) {
-      // An error occurred while creating the node.
-      // This is probably a result of a concurrent action.
-      console.error(e);
+      // The merged content is not a sentence in the schema's grammar, which a
+      // concurrent edit can produce. Report it and mark the container so the
+      // write-back path leaves it alone.
+      reportViolation(options, obj.id, nodeName, e);
+      mapping.set(obj.id, UNRENDERABLE);
+      return null;
     }
   } else if (obj instanceof LoroText) {
     retval = [];
@@ -151,9 +214,9 @@ export function createNodeFromLoroObj(
         }
         retval.push(schema.text(delta.insert, marks));
       } catch (e) {
-        // An error occurred while creating the node.
-        // This is probably a result of a concurrent action.
-        console.error(e);
+        // A mark the schema does not know, or invalid mark attributes. Drop
+        // this delta but keep the rest of the text.
+        reportViolation(options, obj.id, undefined, e);
       }
     }
   } else {
@@ -301,10 +364,7 @@ function reconcileSplitBrainTexts(
   if (insert.length > 0) {
     for (let i = 0; i < loroTexts.length; i++) {
       if (index <= boundaries[i + 1] || i === loroTexts.length - 1) {
-        const localPos = Math.min(
-          index - boundaries[i],
-          loroTexts[i].length,
-        );
+        const localPos = Math.min(index - boundaries[i], loroTexts[i].length);
         loroTexts[i].insert(localPos, insert);
         break;
       }
@@ -670,12 +730,22 @@ export function updateLoroMapChildren(
   // child alignment the original shared-index loop assumed.
   let loroLeft = left;
   let pmLeft = left;
-  const loroMidEnd = loroChildLength - right;
-  const pmMidEnd = nodeChildLength - right;
+  // These shrink as the `updateRight` branch consumes children from the right.
+  // They must not be captured as consts: that branch advances neither index,
+  // so a frozen bound makes the loop non-terminating.
+  let loroMidEnd = loroChildLength - right;
+  let pmMidEnd = nodeChildLength - right;
 
   while (loroLeft < loroMidEnd && pmLeft < pmMidEnd) {
     const leftLoro = loroChildren.get(loroLeft);
     const leftNode = nodeChildren[pmLeft];
+
+    // A container that could not be rendered has no ProseMirror counterpart to
+    // align against. Step over it without consuming a ProseMirror child.
+    if (isContainer(leftLoro) && isUnrenderable(mapping, leftLoro.id)) {
+      loroLeft += 1;
+      continue;
+    }
 
     if (leftLoro instanceof LoroText && Array.isArray(leftNode)) {
       // Count consecutive LoroTexts (split-brain detection)
@@ -747,6 +817,8 @@ export function updateLoroMapChildren(
       } else if (updateRight) {
         updateLoroMap(rightLoro as LoroNode, rightNode as Node, mapping);
         right += 1;
+        loroMidEnd -= 1;
+        pmMidEnd -= 1;
       } else {
         // recreate the element at loroLeft
         const child = loroChildren.get(loroLeft);
@@ -773,12 +845,24 @@ export function updateLoroMapChildren(
     mapping.delete(loroText.id);
     loroText.delete(0, loroText.length);
   } else if (loroSurplus > 0) {
-    loroChildren
+    const surplus = loroChildren
       .toArray()
-      .slice(loroLeft, loroLeft + loroSurplus)
-      .filter(isContainer)
-      .forEach((type) => mapping.delete((type as LoroContainer).id));
-    loroChildren.delete(loroLeft, loroSurplus);
+      .slice(loroLeft, loroLeft + loroSurplus);
+
+    // Walk backwards so the indices of earlier entries stay valid as we delete.
+    for (let i = surplus.length - 1; i >= 0; i--) {
+      const child = surplus[i];
+      if (isContainer(child)) {
+        // Content we merely failed to render is not content anyone deleted.
+        // Leave it in the CRDT so it survives until the conflict resolves;
+        // deleting it here would destroy it for every peer, permanently.
+        if (isUnrenderable(mapping, child.id)) {
+          continue;
+        }
+        mapping.delete(child.id);
+      }
+      loroChildren.delete(loroLeft + i, 1);
+    }
   }
 
   if (pmLeft < nodeChildLength - right) {

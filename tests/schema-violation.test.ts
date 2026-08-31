@@ -103,125 +103,112 @@ describe("schema-violating merges", () => {
     });
   });
 
-  test.fails(
-    "an ordinary local edit must not delete the unrenderable node from the CRDT",
-    () => {
-      const peerA: LoroDocType = new LoroDoc();
-      // The title sits last so this scenario exercises the write-back path only,
-      // without tripping the separate non-termination bug covered below.
-      seed(peerA, { type: "doc", content: [P("hello"), TITLE("Title")] });
-      const peerB: LoroDocType = new LoroDoc();
-      sync(peerA, peerB);
+  test("an ordinary local edit must not delete the unrenderable node from the CRDT", () => {
+    const peerA: LoroDocType = new LoroDoc();
+    // The title sits last so this scenario exercises the write-back path only,
+    // without tripping the separate non-termination bug covered below.
+    seed(peerA, { type: "doc", content: [P("hello"), TITLE("Title")] });
+    const peerB: LoroDocType = new LoroDoc();
+    sync(peerA, peerB);
 
-      violateTitle(peerB, 1);
-      sync(peerB, peerA);
+    violateTitle(peerB, 1);
+    sync(peerB, peerA);
 
-      const mapping: LoroNodeMapping = new Map();
-      const rendered = createNodeFromLoroObj(
-        schema,
-        peerA.getMap(ROOT_DOC_KEY) as LoroNode,
-        mapping,
-      )!;
-      expect(rendered.childCount).toBe(1); // title dropped from the view
+    const mapping: LoroNodeMapping = new Map();
+    const rendered = createNodeFromLoroObj(
+      schema,
+      peerA.getMap(ROOT_DOC_KEY) as LoroNode,
+      mapping,
+    )!;
+    expect(rendered.childCount).toBe(1); // title dropped from the view
 
-      // Peer A types a single character into the surviving paragraph.
-      const state = EditorState.create({ doc: rendered, schema });
-      const next = state.apply(
-        state.tr.insertText("!", rendered.content.size - 1),
-      );
-      updateLoroToPmState(peerA, mapping, next);
+    // Peer A types a single character into the surviving paragraph.
+    const state = EditorState.create({ doc: rendered, schema });
+    const next = state.apply(
+      state.tr.insertText("!", rendered.content.size - 1),
+    );
+    updateLoroToPmState(peerA, mapping, next);
 
-      expect(next.doc.textContent).toBe("hello!");
-      // The title was never edited by anyone. It must survive.
-      expect(nodeNames(peerA)).toContain("noteTitle");
-    },
-  );
+    expect(next.doc.textContent).toBe("hello!");
+    // The title was never edited by anyone. It must survive.
+    expect(nodeNames(peerA)).toContain("noteTitle");
+  });
 
-  test.fails(
-    "the deletion must not propagate to the peer that still renders it",
-    () => {
-      const peerA: LoroDocType = new LoroDoc();
-      seed(peerA, { type: "doc", content: [P("hello"), TITLE("Title")] });
-      const peerB: LoroDocType = new LoroDoc();
-      sync(peerA, peerB);
+  test("the deletion must not propagate to the peer that still renders it", () => {
+    const peerA: LoroDocType = new LoroDoc();
+    seed(peerA, { type: "doc", content: [P("hello"), TITLE("Title")] });
+    const peerB: LoroDocType = new LoroDoc();
+    sync(peerA, peerB);
 
-      violateTitle(peerB, 1);
-      sync(peerB, peerA);
+    violateTitle(peerB, 1);
+    sync(peerB, peerA);
 
-      const mapping: LoroNodeMapping = new Map();
-      const rendered = createNodeFromLoroObj(
-        schema,
-        peerA.getMap(ROOT_DOC_KEY) as LoroNode,
-        mapping,
-      )!;
-      const state = EditorState.create({ doc: rendered, schema });
-      updateLoroToPmState(
-        peerA,
-        mapping,
-        state.apply(state.tr.insertText("!", rendered.content.size - 1)),
-      );
+    const mapping: LoroNodeMapping = new Map();
+    const rendered = createNodeFromLoroObj(
+      schema,
+      peerA.getMap(ROOT_DOC_KEY) as LoroNode,
+      mapping,
+    )!;
+    const state = EditorState.create({ doc: rendered, schema });
+    updateLoroToPmState(
+      peerA,
+      mapping,
+      state.apply(state.tr.insertText("!", rendered.content.size - 1)),
+    );
 
-      sync(peerA, peerB);
+    sync(peerA, peerB);
 
-      // Peer B authored the title's extra child and can still see the title's
-      // text. Peer A's unrelated keystroke must not destroy it for peer B.
-      expect(nodeNames(peerB)).toContain("noteTitle");
-    },
-  );
+    // Peer B authored the title's extra child and can still see the title's
+    // text. Peer A's unrelated keystroke must not destroy it for peer B.
+    expect(nodeNames(peerB)).toContain("noteTitle");
+  });
 
-  test.fails(
-    "updateLoroMapChildren terminates on structural divergence",
-    () => {
-      // Run in a child process: the failure mode is a synchronous infinite loop,
-      // which vitest's testTimeout cannot interrupt.
-      execFileSync(
-        "npx",
-        ["vitest", "run", "tests/hang-repro.test.ts", "--reporter=basic"],
-        {
-          cwd: new URL("..", import.meta.url).pathname,
-          env: { ...process.env, RUN_HANG_REPRO: "1", CI: "1" },
-          timeout: 60_000,
-          stdio: "pipe",
-        },
-      );
-    },
-    90_000,
-  );
+  test("updateLoroMapChildren terminates on structural divergence", () => {
+    // Run in a child process: the failure mode is a synchronous infinite loop,
+    // which vitest's testTimeout cannot interrupt.
+    execFileSync(
+      "npx",
+      ["vitest", "run", "tests/hang-repro.test.ts", "--reporter=basic"],
+      {
+        cwd: new URL("..", import.meta.url).pathname,
+        env: { ...process.env, RUN_HANG_REPRO: "1", CI: "1" },
+        timeout: 60_000,
+        stdio: "pipe",
+      },
+    );
+  }, 90_000);
 
-  test.fails(
-    "schema violations are reported, not just logged to the console",
-    () => {
-      const peerA: LoroDocType = new LoroDoc();
-      seed(peerA, { type: "doc", content: [P("hello"), TITLE("Title")] });
-      const peerB: LoroDocType = new LoroDoc();
-      sync(peerA, peerB);
-      violateTitle(peerB, 1);
-      sync(peerB, peerA);
+  test("schema violations are reported, not just logged to the console", () => {
+    const peerA: LoroDocType = new LoroDoc();
+    seed(peerA, { type: "doc", content: [P("hello"), TITLE("Title")] });
+    const peerB: LoroDocType = new LoroDoc();
+    sync(peerA, peerB);
+    violateTitle(peerB, 1);
+    sync(peerB, peerA);
 
-      // The contract this pins down: callers can observe which containers the
-      // schema rejected, rather than discovering it in a console.error.
-      const seen: { containerId: ContainerID; nodeName?: string }[] = [];
-      const unrenderable = new Set<ContainerID>();
-      const render = createNodeFromLoroObj as unknown as (
-        s: typeof schema,
-        o: LoroNode,
-        m: LoroNodeMapping,
-        opts?: {
-          onSchemaViolation?: (i: {
-            containerId: ContainerID;
-            nodeName?: string;
-          }) => void;
-          unrenderable?: Set<ContainerID>;
-        },
-      ) => unknown;
+    // The contract this pins down: callers can observe which containers the
+    // schema rejected, rather than discovering it in a console.error.
+    const seen: { containerId: ContainerID; nodeName?: string }[] = [];
+    const unrenderable = new Set<ContainerID>();
+    const render = createNodeFromLoroObj as unknown as (
+      s: typeof schema,
+      o: LoroNode,
+      m: LoroNodeMapping,
+      opts?: {
+        onSchemaViolation?: (i: {
+          containerId: ContainerID;
+          nodeName?: string;
+        }) => void;
+        unrenderable?: Set<ContainerID>;
+      },
+    ) => unknown;
 
-      render(schema, peerA.getMap(ROOT_DOC_KEY) as LoroNode, new Map(), {
-        onSchemaViolation: (i) => seen.push(i),
-        unrenderable,
-      });
+    render(schema, peerA.getMap(ROOT_DOC_KEY) as LoroNode, new Map(), {
+      onSchemaViolation: (i) => seen.push(i),
+      unrenderable,
+    });
 
-      expect(seen.map((s) => s.nodeName)).toEqual(["noteTitle"]);
-      expect(unrenderable.size).toBe(1);
-    },
-  );
+    expect(seen.map((s) => s.nodeName)).toEqual(["noteTitle"]);
+    expect(unrenderable.size).toBe(1);
+  });
 });

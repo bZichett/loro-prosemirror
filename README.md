@@ -53,3 +53,26 @@ const plugins = [
   // see above for other plugins
 ];
 ```
+
+## Observing schema violations
+
+Loro guarantees that concurrent edits converge — not that they converge on a
+document your ProseMirror schema accepts. Two peers can each hold a valid
+document whose merge is a node the schema rejects (for example, a node whose
+`content` expression no longer matches after both sides edited its children).
+
+When that happens the offending node is left out of the ProseMirror document,
+because it cannot be built. It is **kept in the Loro document**, so it is not
+lost and reappears once the conflict resolves. Pass `onSchemaViolation` to be
+told when it happens:
+
+```ts
+LoroSyncPlugin({
+  doc,
+  onSchemaViolation: ({ containerId, nodeName, cause }) => {
+    reportToTelemetry({ containerId, nodeName, cause });
+  },
+});
+```
+
+Without the callback the violation is written to `console.error`.

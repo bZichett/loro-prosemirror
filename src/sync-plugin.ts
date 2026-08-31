@@ -60,6 +60,7 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
           mapping: props.mapping ?? new Map(),
           changedBy: "local",
           containerId: props.containerId,
+          onSchemaViolation: props.onSchemaViolation,
         };
       },
       apply: (tr, state, oldEditorState, newEditorState) => {
@@ -204,6 +205,7 @@ function init(view: EditorView) {
       schema,
       innerDoc as LoroMap<LoroNodeContainerType>,
       mapping,
+      { onSchemaViolation: state.onSchemaViolation },
     );
     const tr = view.state.tr.replace(
       0,
@@ -239,6 +241,7 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
         ) as LoroMap<LoroNodeContainerType>)
       : (state.doc as LoroDocType).getMap(ROOT_DOC_KEY),
     mapping,
+    { onSchemaViolation: state.onSchemaViolation },
   );
   // Use saved cursors (captured when PM ↔ Loro were last in sync) rather than
   // converting the current PM selection.  After doc.import() the Loro text

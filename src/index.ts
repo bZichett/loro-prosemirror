@@ -6,6 +6,7 @@ export {
 } from "./sync-plugin-key";
 export {
   createNodeFromLoroObj,
+  isUnrenderable,
   updateLoroToPmState,
   ROOT_DOC_KEY,
   NODE_NAME_KEY,
@@ -18,6 +19,8 @@ export {
   type LoroNode,
   type LoroContainer,
   type LoroType,
+  type RenderOptions,
+  type SchemaViolationInfo,
 } from "./lib";
 export type {
   CursorPluginOptions,
