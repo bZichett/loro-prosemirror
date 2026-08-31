@@ -9,9 +9,9 @@
  * Replay a reported failure directly with:
  *   RUN_FUZZ=1 npx vitest run tests/merge-fuzz.test.ts
  */
-import { execFileSync } from "node:child_process";
 import { describe, test } from "vitest";
 import { runCampaign } from "./fuzz/merge-fuzz";
+import { runVitestInChild } from "./utils";
 
 const ITERATIONS = Number(process.env.FUZZ_ITERATIONS ?? 250);
 const SEED = Number(process.env.FUZZ_SEED ?? 1);
@@ -40,26 +40,6 @@ describe.runIf(process.env.RUN_FUZZ)("merge properties", () => {
 
 describe.skipIf(process.env.RUN_FUZZ)("merge fuzzing", () => {
   test("campaigns pass", () => {
-    try {
-      execFileSync(
-        "npx",
-        ["vitest", "run", "tests/merge-fuzz.test.ts", "--reporter=basic"],
-        {
-          cwd: new URL("..", import.meta.url).pathname,
-          env: { ...process.env, RUN_FUZZ: "1", CI: "1" },
-          timeout: 180_000,
-          stdio: "pipe",
-        },
-      );
-    } catch (e) {
-      const err = e as { stdout?: Buffer; signal?: string };
-      if (err.signal === "SIGTERM") {
-        throw new Error(
-          "fuzz campaign did not terminate within 180s -- likely a " +
-            "non-terminating loop in the write-back path",
-        );
-      }
-      throw new Error(String(err.stdout ?? e));
-    }
+    runVitestInChild("tests/merge-fuzz.test.ts", { RUN_FUZZ: "1" }, 180_000);
   }, 240_000);
 });

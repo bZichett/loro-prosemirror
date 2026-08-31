@@ -8,7 +8,6 @@
  * hold a valid document whose join is a term the schema rejects. These tests
  * pin down what the binding does when that happens.
  */
-import { execFileSync } from "node:child_process";
 import { type ContainerID, LoroDoc, LoroList, LoroMap } from "loro-crdt";
 import { EditorState } from "prosemirror-state";
 import { describe, expect, test } from "vitest";
@@ -22,6 +21,7 @@ import {
   updateLoroToPmState,
 } from "../src/lib";
 import { schema } from "./schema";
+import { runVitestInChild } from "./utils";
 
 const P = (text: string) => ({
   type: "paragraph",
@@ -166,15 +166,10 @@ describe("schema-violating merges", () => {
   test("updateLoroMapChildren terminates on structural divergence", () => {
     // Run in a child process: the failure mode is a synchronous infinite loop,
     // which vitest's testTimeout cannot interrupt.
-    execFileSync(
-      "npx",
-      ["vitest", "run", "tests/hang-repro.test.ts", "--reporter=basic"],
-      {
-        cwd: new URL("..", import.meta.url).pathname,
-        env: { ...process.env, RUN_HANG_REPRO: "1", CI: "1" },
-        timeout: 60_000,
-        stdio: "pipe",
-      },
+    runVitestInChild(
+      "tests/hang-repro.test.ts",
+      { RUN_HANG_REPRO: "1" },
+      60_000,
     );
   }, 90_000);
 
