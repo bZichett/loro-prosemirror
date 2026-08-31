@@ -22,6 +22,7 @@ import {
   safeSetSelection,
   updateLoroToPmState,
 } from "./lib";
+import { buildMappingFromExistingDoc } from "./build-mapping";
 import {
   loroSyncPluginKey,
   type LoroSyncPluginProps,
@@ -198,23 +199,44 @@ function init(view: EditorView) {
     });
     view.dispatch(tr);
   } else {
-    const schema = view.state.schema;
-    // Create node from loro object
-    const node = createNodeFromLoroObj(
-      schema,
+    // Fast path: if the PM doc already matches the Loro tree (e.g. after
+    // deterministic bootstrap), build the mapping by walking both trees in
+    // parallel. No document replacement, so plugin decorations are preserved.
+    const mapped = buildMappingFromExistingDoc(
       innerDoc as LoroMap<LoroNodeContainerType>,
+      view.state.doc,
       mapping,
     );
-    const tr = view.state.tr.replace(
-      0,
-      view.state.doc.content.size,
-      new Slice(Fragment.from(node), 0, 0),
-    );
-    tr.setMeta(loroSyncPluginKey, {
-      type: "update-state",
-      state: { mapping, docSubscription, snapshot: null },
-    });
-    view.dispatch(tr);
+
+    if (mapped) {
+      console.log('[LoroSync] Fast path: mapping built without doc replacement');
+      // Mapping built without touching the doc — dispatch metadata-only update.
+      const tr = view.state.tr.setMeta(loroSyncPluginKey, {
+        type: "update-state",
+        state: { mapping, docSubscription, snapshot: null },
+      });
+      view.dispatch(tr);
+    } else {
+      console.log('[LoroSync] Slow path: full doc replacement (mismatch)');
+      // Mismatch — fall back to full replace (snapshot load, remote-first open)
+      mapping.clear();
+      const schema = view.state.schema;
+      const node = createNodeFromLoroObj(
+        schema,
+        innerDoc as LoroMap<LoroNodeContainerType>,
+        mapping,
+      );
+      const tr = view.state.tr.replace(
+        0,
+        view.state.doc.content.size,
+        new Slice(Fragment.from(node), 0, 0),
+      );
+      tr.setMeta(loroSyncPluginKey, {
+        type: "update-state",
+        state: { mapping, docSubscription, snapshot: null },
+      });
+      view.dispatch(tr);
+    }
   }
 }
 
