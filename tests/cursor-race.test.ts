@@ -183,8 +183,7 @@ describe("cursor race condition on remote import", () => {
     // User1 types "ALPHA" one char at a time at position 0
     let currentText = "seed text";
     for (let i = 0; i < 5; i++) {
-      currentText =
-        currentText.slice(0, i) + "ALPHA"[i] + currentText.slice(i);
+      currentText = currentText.slice(0, i) + "ALPHA"[i] + currentText.slice(i);
       const { mapping: map1 } = buildPmFromLoro(doc1);
       updateLoroToPmState(
         doc1,
@@ -217,20 +216,12 @@ describe("cursor race condition on remote import", () => {
     );
     expect(staleCursor).toBeDefined();
 
-    const [stalePos] = cursorToAbsolutePosition(
-      staleCursor!,
-      doc2,
-      map2Final,
-    );
+    const [stalePos] = cursorToAbsolutePosition(staleCursor!, doc2, map2Final);
     // Stale: offset 9 in "ALPHAseed text" is 'e' (in "seed") — position 10
     expect(stalePos).toBe(10); // Wrong
 
     // Saved cursor: adjusts for all 5 inserted characters
-    const [fixedPos] = cursorToAbsolutePosition(
-      savedCursor!,
-      doc2,
-      map2Final,
-    );
+    const [fixedPos] = cursorToAbsolutePosition(savedCursor!, doc2, map2Final);
     expect(fixedPos).toBe(15); // Correct: 1 + 5 (ALPHA) + 9 (seed text)
 
     // Divergence equals number of remotely inserted characters

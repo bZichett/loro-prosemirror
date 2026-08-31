@@ -3,6 +3,7 @@ import { Fragment, type Node as PmNode, Slice } from "prosemirror-model";
 import {
   type EditorState,
   Plugin,
+  type Selection,
   type StateField,
   TextSelection,
 } from "prosemirror-state";
@@ -285,11 +286,11 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
  */
 function resolveLoroSelection(
   pmDoc: PmNode,
-  loroDoc: LoroDocType | LoroMap,
+  loroDoc: LoroDocType,
   mapping: LoroNodeMapping,
   anchor: Cursor,
   focus?: Cursor,
-): TextSelection | null {
+): Selection | null {
   const anchorPos = cursorToAbsolutePosition(anchor, loroDoc, mapping)[0];
   if (anchorPos == null) return null;
 

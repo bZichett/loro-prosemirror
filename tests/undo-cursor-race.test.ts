@@ -51,9 +51,7 @@ function flushTimer(): Promise<void> {
 function seedLoro(doc: LoroDocType, text: string) {
   const pm = createEditorState(schema, {
     type: "doc",
-    content: [
-      { type: "paragraph", content: [{ type: "text", text }] },
-    ],
+    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
   });
   const mapping: LoroNodeMapping = new Map();
   updateLoroToPmState(doc, mapping, pm);
@@ -65,10 +63,7 @@ function createPeer(seedText: string) {
   seedLoro(doc, seedText);
   const state = EditorState.create({
     schema,
-    plugins: [
-      LoroSyncPlugin({ doc }),
-      LoroUndoPlugin({ doc }),
-    ],
+    plugins: [LoroSyncPlugin({ doc }), LoroUndoPlugin({ doc })],
   });
   const view = new EditorView(document.createElement("div"), { state });
   return { doc, view };
@@ -79,10 +74,7 @@ function createSyncedPeer(sourceDoc: LoroDoc) {
   sync(sourceDoc, doc);
   const state = EditorState.create({
     schema,
-    plugins: [
-      LoroSyncPlugin({ doc }),
-      LoroUndoPlugin({ doc }),
-    ],
+    plugins: [LoroSyncPlugin({ doc }), LoroUndoPlugin({ doc })],
   });
   const view = new EditorView(document.createElement("div"), { state });
   return { doc, view };
