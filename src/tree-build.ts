@@ -52,7 +52,7 @@ export const WEAK_NODE_TO_TREE_ID = new WeakMap<Node, TreeID>();
  * laid out as a nested Map/List: asking Loro for a tree root creates one.
  */
 export function getRootTree(
-  doc: LoroDocType,
+  doc: LoroDoc | LoroDocType,
   rootKey: string = ROOT_DOC_KEY,
 ): LoroTree {
   return (doc as LoroDoc).getTree(rootKey);
