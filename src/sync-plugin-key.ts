@@ -51,6 +51,24 @@ export interface LoroSyncPluginProps {
    */
   externalCheckout?: boolean;
   /**
+   * A server owns the document's first materialisation. When the editor
+   * opens with content and Loro is still unpopulated, the plugin waits,
+   * read-only, for the first import instead of writing the editor's content
+   * back -- that write would create local containers conflicting with the
+   * server's. Editing is enabled once the first import arrives. Default
+   * false.
+   */
+  collaboration?: boolean;
+  /**
+   * When Loro is unpopulated but the editor holds content, seed Loro from
+   * the editor instead of discarding the content. Recovers a document the
+   * editor was built with but Loro never received. The seed is committed
+   * under `sysInit`, so it does not land on the undo stack. Default false:
+   * Loro is the source of truth and an unpopulated root is an empty
+   * document.
+   */
+  seedFromEditor?: boolean;
+  /**
    * Called when merged content cannot be expressed in the editor's schema, so
    * the affected node is left out of the ProseMirror document.
    *
@@ -82,4 +100,9 @@ export interface LoroSyncPluginState extends LoroSyncPluginProps {
    * state.
    */
   initError?: string;
+  /**
+   * In collaboration mode, whether the first import has arrived. Until it
+   * has, the editor is read-only and nothing is written back.
+   */
+  loroReady?: boolean;
 }

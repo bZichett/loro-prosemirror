@@ -54,6 +54,17 @@ function errorMessage(err: unknown): string {
 }
 
 /**
+ * Whether the editor holds only the document ProseMirror creates for a
+ * stateless editor -- `topNodeType.createAndFill()` -- as opposed to content
+ * it was given. Compared structurally, so it is exact rather than a size
+ * heuristic.
+ */
+function isEmptyScaffold(state: EditorState): boolean {
+  const scaffold = state.schema.topNodeType.createAndFill();
+  return scaffold != null && state.doc.eq(scaffold);
+}
+
+/**
  * Whether a transaction originated outside the sync layer and so needs a
  * write-back. Remote updates, state init, and a time-travel render marked
  * `LoroTxMeta.timeTravelSync` are all Loro-managed: writing them back would
@@ -71,7 +82,12 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
     props: {
       editable: (state) => {
         const syncState = loroSyncPluginKey.getState(state);
-        return syncState?.snapshot == null;
+        if (syncState?.snapshot != null) return false;
+        // Read-only during the collaboration cold start: a keystroke typed
+        // before the first import lives only in the editor and is wiped by
+        // that import's rebuild.
+        if (syncState?.collaboration && !syncState.loroReady) return false;
+        return true;
       },
     },
     state: {
@@ -99,6 +115,10 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
 
         if (meta?.type === "non-local-updates") {
           state.changedBy = "import";
+          // The first import has arrived; Loro is populated and writes are safe.
+          if (state.collaboration && !state.loroReady) {
+            state.loroReady = true;
+          }
         } else {
           state.changedBy = "local";
         }
@@ -108,7 +128,10 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
               // Sync is disabled; the editor keeps working on its own document.
               break;
             }
-            if (!undoState?.isUndoing.current) {
+            if (
+              !undoState?.isUndoing.current &&
+              (!state.collaboration || state.loroReady)
+            ) {
               try {
                 state.strategy.write(state, state.mapping, newEditorState);
               } catch (err) {
@@ -256,11 +279,33 @@ function init(view: EditorView) {
   const { strategy } = state;
   const mapping: LoroNodeMapping = new Map();
   if (strategy.isUnpopulated(state)) {
-    // Empty doc
-    const tr = view.state.tr.delete(0, view.state.doc.content.size);
+    const editorHasContent = !isEmptyScaffold(view.state);
+    let tr = view.state.tr;
+    if (state.collaboration && editorHasContent) {
+      // A server owns the first materialisation and the editor's content is a
+      // preview of it. Writing it back would create local containers that
+      // conflict with the server's. Wait, read-only, for the first import.
+    } else if (
+      state.collaboration ||
+      (state.seedFromEditor && editorHasContent)
+    ) {
+      // Seed Loro from the editor under sysInit. In collaboration this gives
+      // the undo stack a baseline for the scaffold before the first import;
+      // with seedFromEditor it recovers content Loro never received. Neither
+      // lands on the undo stack.
+      strategy.write(state, mapping, view.state, LoroOrigins.sysInit);
+    } else {
+      // Loro is the source of truth: an unpopulated root is an empty document.
+      tr = tr.delete(0, view.state.doc.content.size);
+    }
     tr.setMeta(loroSyncPluginKey, {
       type: "update-state",
-      state: { mapping, docSubscription, snapshot: null },
+      state: {
+        mapping,
+        docSubscription,
+        snapshot: null,
+        loroReady: !state.collaboration || !editorHasContent,
+      },
     });
     view.dispatch(tr);
   } else if (
@@ -277,7 +322,7 @@ function init(view: EditorView) {
     // survive. A transaction with no steps keeps the same document instance.
     const tr = view.state.tr.setMeta(loroSyncPluginKey, {
       type: "update-state",
-      state: { mapping, docSubscription, snapshot: null },
+      state: { mapping, docSubscription, snapshot: null, loroReady: true },
     });
     view.dispatch(tr);
   } else {
@@ -303,7 +348,7 @@ function init(view: EditorView) {
     }
     tr.setMeta(loroSyncPluginKey, {
       type: "update-state",
-      state: { mapping, docSubscription, snapshot: null },
+      state: { mapping, docSubscription, snapshot: null, loroReady: true },
     });
     view.dispatch(tr);
   }
