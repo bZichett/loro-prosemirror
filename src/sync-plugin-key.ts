@@ -12,6 +12,14 @@ export interface LoroSyncPluginProps {
   mapping?: LoroNodeMapping;
   containerId?: ContainerID;
   /**
+   * Name of the top-level container holding the document. Defaults to
+   * `ROOT_DOC_KEY`; ignored when `containerId` is given.
+   *
+   * The name is part of the wire format, baked into every persisted snapshot
+   * and update, so it cannot be changed for a document that already exists.
+   */
+  rootKey?: string;
+  /**
    * Called when merged content cannot be expressed in the editor's schema, so
    * the affected node is left out of the ProseMirror document.
    *

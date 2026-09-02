@@ -16,10 +16,10 @@ import {
 import {
   clearChangedNodes,
   createNodeFromLoroObj,
+  getRootContainer,
   type LoroDocType,
   type LoroNodeContainerType,
   type LoroNodeMapping,
-  ROOT_DOC_KEY,
   safeSetSelection,
   updateLoroToPmState,
 } from "./lib";
@@ -56,12 +56,13 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
       init: (_config, editorState): LoroSyncPluginState => {
         configLoroTextStyle(props.doc, editorState.schema);
 
+        // Spread rather than copying fields across: the state extends the
+        // props, so mirroring them by name silently drops every option added
+        // later -- which is exactly how `rootKey` first went missing here.
         return {
-          doc: props.doc,
+          ...props,
           mapping: props.mapping ?? new Map(),
           changedBy: "local",
-          containerId: props.containerId,
-          onSchemaViolation: props.onSchemaViolation,
         };
       },
       apply: (tr, state, oldEditorState, newEditorState) => {
@@ -83,6 +84,7 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
                 state.mapping,
                 newEditorState,
                 props.containerId,
+                props.rootKey,
               );
             }
             // Save Loro cursors while PM and Loro are in sync.
@@ -184,11 +186,11 @@ function init(view: EditorView) {
     );
   }
 
-  const innerDoc = state.containerId
-    ? (state.doc.getContainerById(
-        state.containerId,
-      ) as LoroMap<LoroNodeContainerType>)
-    : (state.doc as LoroDocType).getMap(ROOT_DOC_KEY);
+  const innerDoc = getRootContainer(
+    state.doc as LoroDocType,
+    state.containerId,
+    state.rootKey,
+  );
 
   const mapping: LoroNodeMapping = new Map();
   if (innerDoc.size === 0) {
@@ -236,11 +238,11 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
   clearChangedNodes(state.doc as LoroDocType, event, mapping);
   const node = createNodeFromLoroObj(
     view.state.schema,
-    state.containerId
-      ? (state.doc.getContainerById(
-          state.containerId,
-        ) as LoroMap<LoroNodeContainerType>)
-      : (state.doc as LoroDocType).getMap(ROOT_DOC_KEY),
+    getRootContainer(
+      state.doc as LoroDocType,
+      state.containerId,
+      state.rootKey,
+    ),
     mapping,
     { onSchemaViolation: state.onSchemaViolation },
   );

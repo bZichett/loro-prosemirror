@@ -6,6 +6,7 @@ export {
 } from "./sync-plugin-key";
 export {
   createNodeFromLoroObj,
+  getRootContainer,
   isUnrenderable,
   updateLoroToPmState,
   ROOT_DOC_KEY,

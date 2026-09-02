@@ -123,16 +123,43 @@ function reportViolation(
   }
 }
 
+/**
+ * Resolve the container holding the document.
+ *
+ * An explicit `containerId` wins; otherwise the document lives in a top-level
+ * container named `rootKey`, defaulting to {@link ROOT_DOC_KEY}.
+ *
+ * The name is part of the wire format — it is baked into every persisted
+ * snapshot and update — so it is an option rather than a constant. That lets an
+ * application keep documents it has already written under a different name, or
+ * place a second top-level container alongside the document.
+ */
+export function getRootContainer(
+  doc: LoroDocType,
+  containerId?: ContainerID,
+  rootKey: string = ROOT_DOC_KEY,
+): LoroMap<LoroNodeContainerType> {
+  if (containerId) {
+    return doc.getContainerById(containerId) as LoroMap<LoroNodeContainerType>;
+  }
+  // `LoroDocType` fixes its root schema to `doc` and `data`, so a name supplied
+  // at runtime is by construction outside that union. Widening to the untyped
+  // `LoroDoc` here is the honest statement: with `rootKey` in play the document
+  // may carry roots the declared schema does not name. The returned container is
+  // still asserted to the node shape, which is what the rest of the file relies
+  // on.
+  return (doc as LoroDoc).getMap(rootKey) as LoroMap<LoroNodeContainerType>;
+}
+
 export function updateLoroToPmState(
   doc: LoroDocType,
   mapping: LoroNodeMapping,
   editorState: EditorState,
   containerId?: ContainerID,
+  rootKey?: string,
 ) {
   const node = editorState.doc;
-  const map = containerId
-    ? (doc.getContainerById(containerId) as LoroMap<LoroNodeContainerType>)
-    : doc.getMap(ROOT_DOC_KEY);
+  const map = getRootContainer(doc, containerId, rootKey);
 
   let isInit = false;
   if (map.get("nodeName") == null) {
