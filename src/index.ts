@@ -4,7 +4,7 @@ export {
   type LoroSyncPluginProps,
   type LoroSyncPluginState,
 } from "./sync-plugin-key";
-export { LoroOrigins } from "./origins";
+export { LoroOrigins, LoroTxMeta } from "./origins";
 export {
   type ContainerRef,
   type ContainerStrategy,
@@ -22,6 +22,7 @@ export {
   tryGetLoroMapAttributes,
   tryGetLoroMapChildren,
   updateLoroToPmState,
+  updateLoroMap,
   ROOT_DOC_KEY,
   NODE_NAME_KEY,
   CHILDREN_KEY,
