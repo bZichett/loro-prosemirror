@@ -36,6 +36,7 @@ export {
   type LoroType,
   type RenderOptions,
   type SchemaViolationInfo,
+  type UpdateLoroOptions,
 } from "./lib";
 export {
   convertPmSelectionToCursors,
