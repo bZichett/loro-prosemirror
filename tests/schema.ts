@@ -24,6 +24,11 @@ const nodes: { [key: string]: NodeSpec } = {
     content: "paragraph block*",
     toDOM: () => ["li", 0],
   },
+  horizontal_rule: {
+    group: "block",
+    toDOM: () => ["hr"],
+    parseDOM: [{ tag: "hr" }],
+  },
   text: {
     group: "inline",
   },
