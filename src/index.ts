@@ -5,6 +5,13 @@ export {
   type LoroSyncPluginState,
 } from "./sync-plugin-key";
 export { LoroOrigins } from "./origins";
+export {
+  type ContainerRef,
+  type ContainerStrategy,
+  type ContainerStrategySelector,
+  nestedListStrategy,
+  resolveContainerStrategy,
+} from "./container-strategy";
 export { buildMappingFromExistingDoc } from "./build-mapping";
 export { tryFastTextSync } from "./incremental-sync";
 export {

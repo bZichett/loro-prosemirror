@@ -63,7 +63,7 @@ describe("configurable root container name", () => {
       new Map() as LoroNodeMapping,
       paragraphState("hi"),
       undefined,
-      CUSTOM_ROOT,
+      { rootKey: CUSTOM_ROOT },
     );
     doc.commit();
 
@@ -81,7 +81,7 @@ describe("configurable root container name", () => {
       new Map() as LoroNodeMapping,
       paragraphState("hello"),
       undefined,
-      CUSTOM_ROOT,
+      { rootKey: CUSTOM_ROOT },
     );
     doc.commit();
 

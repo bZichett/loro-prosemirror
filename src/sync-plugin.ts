@@ -15,18 +15,17 @@ import {
 } from "./cursor/common";
 import {
   clearChangedNodes,
-  createNodeFromLoroObj,
   getRootContainer,
   type LoroDocType,
   type LoroNodeMapping,
   safeSetSelection,
-  updateLoroToPmState,
 } from "./lib";
 import {
   loroSyncPluginKey,
   type LoroSyncPluginProps,
   type LoroSyncPluginState,
 } from "./sync-plugin-key";
+import { resolveContainerStrategy } from "./container-strategy";
 import { buildMappingFromExistingDoc } from "./build-mapping";
 import { tryFastTextSync } from "./incremental-sync";
 import { LoroOrigins } from "./origins";
@@ -65,6 +64,10 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
           ...props,
           mapping: props.mapping ?? new Map(),
           changedBy: "local",
+          strategy: resolveContainerStrategy(
+            props.container,
+            editorState.doc.type.name,
+          ),
         };
       },
       apply: (tr, state, oldEditorState, newEditorState) => {
@@ -81,13 +84,7 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
         switch (meta?.type) {
           case "doc-changed":
             if (!undoState?.isUndoing.current) {
-              updateLoroToPmState(
-                state.doc as LoroDocType,
-                state.mapping,
-                newEditorState,
-                props.containerId,
-                props.rootKey,
-              );
+              state.strategy.write(state, state.mapping, newEditorState);
             }
             // Save Loro cursors while PM and Loro are in sync.
             // Remote events will reuse these instead of converting stale PM
@@ -104,9 +101,12 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
             break;
           case "update-state":
             state = { ...state, ...meta.state };
+            // No explicit timestamp: Loro's `Change.timestamp` is in seconds,
+            // so passing `Date.now()` stamped a far-future value. Loro fills
+            // in its own, as every other commit in this package lets it.
             state.doc.commit({
               origin: LoroOrigins.sysInit,
-              timestamp: Date.now(),
+              message: LoroOrigins.sysInit,
             });
             break;
           default:
@@ -188,14 +188,9 @@ function init(view: EditorView) {
     );
   }
 
-  const innerDoc = getRootContainer(
-    state.doc as LoroDocType,
-    state.containerId,
-    state.rootKey,
-  );
-
+  const { strategy } = state;
   const mapping: LoroNodeMapping = new Map();
-  if (innerDoc.size === 0) {
+  if (strategy.isUnpopulated(state)) {
     // Empty doc
     const tr = view.state.tr.delete(0, view.state.doc.content.size);
     tr.setMeta(loroSyncPluginKey, {
@@ -205,7 +200,12 @@ function init(view: EditorView) {
     view.dispatch(tr);
   } else if (
     state.fastInit &&
-    buildMappingFromExistingDoc(innerDoc, view.state.doc, mapping)
+    strategy.fastPaths &&
+    buildMappingFromExistingDoc(
+      getRootContainer(state.doc, state.containerId, state.rootKey),
+      view.state.doc,
+      mapping,
+    )
   ) {
     // The editor's document already matches Loro, so the mapping was built by
     // walking both without replacing the document, and plugin decorations
@@ -218,16 +218,24 @@ function init(view: EditorView) {
   } else {
     // A failed fast-init walk may have partially filled the mapping.
     mapping.clear();
-    const schema = view.state.schema;
-    // Create node from loro object
-    const node = createNodeFromLoroObj(schema, innerDoc, mapping, {
+    const node = strategy.read(state, mapping, view.state.schema, {
       onSchemaViolation: state.onSchemaViolation,
     });
-    const tr = view.state.tr.replace(
-      0,
-      view.state.doc.content.size,
-      new Slice(Fragment.from(node), 0, 0),
-    );
+    const tr = view.state.tr;
+    if (node != null) {
+      tr.replace(
+        0,
+        view.state.doc.content.size,
+        new Slice(Fragment.from(node), 0, 0),
+      );
+    } else {
+      // Feeding null to Fragment.from yields an empty fragment and would blank
+      // the editor. A root with no valid representation at this point is a
+      // transient state during bootstrap; keep what the editor holds.
+      console.warn(
+        "[LoroSync] init: document has no valid representation yet; keeping the editor's content",
+      );
+    }
     tr.setMeta(loroSyncPluginKey, {
       type: "update-state",
       state: { mapping, docSubscription, snapshot: null },
@@ -267,16 +275,9 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
 
   const mapping = state.mapping;
   clearChangedNodes(state.doc as LoroDocType, event, mapping);
-  const node = createNodeFromLoroObj(
-    view.state.schema,
-    getRootContainer(
-      state.doc as LoroDocType,
-      state.containerId,
-      state.rootKey,
-    ),
-    mapping,
-    { onSchemaViolation: state.onSchemaViolation },
-  );
+  const node = state.strategy.read(state, mapping, view.state.schema, {
+    onSchemaViolation: state.onSchemaViolation,
+  });
   // Use saved cursors (captured when PM ↔ Loro were last in sync) rather than
   // converting the current PM selection.  After doc.import() the Loro text
   // already contains the remote characters but the PM document hasn't been

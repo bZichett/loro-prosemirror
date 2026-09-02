@@ -152,29 +152,53 @@ export function getRootContainer(
   return (doc as LoroDoc).getMap(rootKey) as LoroMap<LoroNodeContainerType>;
 }
 
+export interface UpdateLoroOptions {
+  /** See {@link getRootContainer}. Ignored when a `containerId` is given. */
+  rootKey?: string;
+  /**
+   * Commit origin. Defaults to `LoroOrigins.userEdit`, which the UndoManager
+   * tracks; init and recovery writes pass `LoroOrigins.sysInit` to stay off
+   * the undo stack.
+   */
+  origin?: string;
+}
+
+/**
+ * Sync the editor document into Loro.
+ *
+ * The first write to a root also records its `nodeName`. When the enclosing
+ * commit would be undo-tracked, that write is flushed first in its own
+ * `sysInit` commit: otherwise undoing back past it would remove the
+ * `nodeName` and leave a root the reader cannot rebuild. When the caller is
+ * already committing under `sysInit`, the write is folded into the same
+ * commit, so history never holds a bar with a named root and no children —
+ * a state with no valid document representation.
+ *
+ * Every commit mirrors its `origin` into `message`. Loro exposes `message`
+ * but not `origin` to application code through `doc.getAllChanges()`, so the
+ * mirror is the only way a consumer can tell a bootstrap commit from a user
+ * edit when it walks history.
+ */
 export function updateLoroToPmState(
   doc: LoroDocType,
   mapping: LoroNodeMapping,
   editorState: EditorState,
   containerId?: ContainerID,
-  rootKey?: string,
+  options?: UpdateLoroOptions,
 ) {
   const node = editorState.doc;
-  const map = getRootContainer(doc, containerId, rootKey);
+  const map = getRootContainer(doc, containerId, options?.rootKey);
+  const origin = options?.origin ?? LoroOrigins.userEdit;
 
-  let isInit = false;
   if (map.get("nodeName") == null) {
-    doc.commit();
-    isInit = true;
     map.set("nodeName", node.type.name);
+    if (origin !== LoroOrigins.sysInit) {
+      doc.commit({ origin: LoroOrigins.sysInit, message: LoroOrigins.sysInit });
+    }
   }
 
   updateLoroMap(map, node, mapping);
-  if (isInit) {
-    doc.commit({ origin: LoroOrigins.sysInit });
-  } else {
-    doc.commit({ origin: LoroOrigins.userEdit });
-  }
+  doc.commit({ origin, message: origin });
 }
 
 /**

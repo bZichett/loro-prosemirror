@@ -1,6 +1,10 @@
 import type { ContainerID, Cursor, LoroDoc, Subscription } from "loro-crdt";
 import { PluginKey } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
+import type {
+  ContainerStrategy,
+  ContainerStrategySelector,
+} from "./container-strategy";
 import type { LoroDocType, LoroNodeMapping, SchemaViolationInfo } from "./lib";
 
 export const loroSyncPluginKey = new PluginKey<LoroSyncPluginState>(
@@ -19,6 +23,12 @@ export interface LoroSyncPluginProps {
    * and update, so it cannot be changed for a document that already exists.
    */
   rootKey?: string;
+  /**
+   * How the document is laid out inside Loro. Defaults to the nested
+   * Map/List layout. A function receives the editor's root node type and
+   * chooses per document. See `container-strategy.ts`.
+   */
+  container?: ContainerStrategySelector;
   /**
    * On init, when the editor's document already matches the Loro document
    * structurally, build the container mapping by walking the two in parallel
@@ -49,6 +59,8 @@ export interface LoroSyncPluginProps {
 export interface LoroSyncPluginState extends LoroSyncPluginProps {
   changedBy: "local" | "import" | "checkout";
   mapping: LoroNodeMapping;
+  /** The `container` selector resolved against this editor's root node type. */
+  strategy: ContainerStrategy;
   snapshot?: LoroDoc | null;
   view?: EditorView;
   containerId?: ContainerID;

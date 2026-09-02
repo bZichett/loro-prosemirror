@@ -26,6 +26,7 @@ import {
   type LoroDocType,
   type LoroNodeMapping,
 } from "../src/lib";
+import { nestedListStrategy } from "../src/container-strategy";
 import {
   convertPmSelectionToCursors,
   cursorToAbsolutePosition,
@@ -55,7 +56,7 @@ function makeSyncState(
   doc: LoroDocType,
   mapping: LoroNodeMapping,
 ): LoroSyncPluginState {
-  return { doc, mapping, changedBy: "local" };
+  return { doc, mapping, changedBy: "local", strategy: nestedListStrategy };
 }
 
 describe("cursor race condition on remote import", () => {
