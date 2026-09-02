@@ -42,7 +42,15 @@ type PluginTransactionType =
   | {
       type: "update-state";
       state: Partial<LoroSyncPluginState>;
+    }
+  | {
+      type: "init-error";
+      error: string;
     };
+
+function errorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
 
 export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
   return new Plugin({
@@ -83,13 +91,31 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
         }
         switch (meta?.type) {
           case "doc-changed":
+            if (state.initError) {
+              // Sync is disabled; the editor keeps working on its own document.
+              break;
+            }
             if (!undoState?.isUndoing.current) {
-              state.strategy.write(state, state.mapping, newEditorState);
+              try {
+                state.strategy.write(state, state.mapping, newEditorState);
+              } catch (err) {
+                // A write-back that throws is a runtime failure, not a document
+                // state, and it would recur on every keystroke. Disable sync
+                // rather than let the editor freeze.
+                console.error(
+                  "[LoroSync] write-back failed; disabling sync:",
+                  err,
+                );
+                return {
+                  ...state,
+                  initError: `sync-disabled: ${errorMessage(err)}`,
+                };
+              }
             }
             // Save Loro cursors while PM and Loro are in sync.
             // Remote events will reuse these instead of converting stale PM
             // positions against the already-imported Loro text.
-            {
+            try {
               const { anchor, focus } = convertPmSelectionToCursors(
                 newEditorState.doc,
                 newEditorState.selection,
@@ -97,6 +123,10 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
               );
               state.savedAnchor = anchor;
               state.savedFocus = focus;
+            } catch {
+              // Cursor conversion failing is not worth disabling sync for; a
+              // stale saved cursor only affects where the caret lands after
+              // the next remote update.
             }
             break;
           case "update-state":
@@ -108,6 +138,9 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
               origin: LoroOrigins.sysInit,
               message: LoroOrigins.sysInit,
             });
+            break;
+          case "init-error":
+            state = { ...state, initError: meta.error };
             break;
           default:
             break;
@@ -131,7 +164,23 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
       return null;
     },
     view: (view: EditorView) => {
-      const timeoutId = setTimeout(() => init(view), 0);
+      const timeoutId = setTimeout(() => {
+        try {
+          init(view);
+        } catch (err) {
+          // An exception here would otherwise be lost in the timer callback,
+          // leaving an editor that looks fine and silently never syncs.
+          console.error("[LoroSync] initialization failed:", err);
+          if (!view.isDestroyed) {
+            view.dispatch(
+              view.state.tr.setMeta(loroSyncPluginKey, {
+                type: "init-error",
+                error: errorMessage(err),
+              }),
+            );
+          }
+        }
+      }, 0);
       return {
         update: (view: EditorView, prevState: EditorState) => {
           // Save Loro cursors on selection-only changes (Home/End/click) so
@@ -146,14 +195,18 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
             const state = loroSyncPluginKey.getState(
               view.state,
             ) as LoroSyncPluginState;
-            if (!state) return;
-            const { anchor, focus } = convertPmSelectionToCursors(
-              view.state.doc,
-              view.state.selection,
-              state,
-            );
-            state.savedAnchor = anchor;
-            state.savedFocus = focus;
+            if (!state || state.initError) return;
+            try {
+              const { anchor, focus } = convertPmSelectionToCursors(
+                view.state.doc,
+                view.state.selection,
+                state,
+              );
+              state.savedAnchor = anchor;
+              state.savedFocus = focus;
+            } catch {
+              // See the matching catch in apply(): a stale cursor is tolerable.
+            }
           }
         },
         destroy: () => {
@@ -176,16 +229,22 @@ function init(view: EditorView) {
 
   docSubscription?.();
 
+  // An exception inside a Loro subscription callback propagates into Loro's
+  // event dispatch, where it can leave the document mid-update. Contain it.
+  const onEvent = (event: LoroEventBatch) => {
+    try {
+      updateNodeOnLoroEvent(view, event);
+    } catch (err) {
+      console.error("[LoroSync] failed to apply a Loro event:", err);
+    }
+  };
+
   if (state.containerId) {
     docSubscription = state
       .doc!.getContainerById(state.containerId)!
-      .subscribe((event) => {
-        updateNodeOnLoroEvent(view, event);
-      });
+      .subscribe(onEvent);
   } else {
-    docSubscription = state.doc.subscribe((event) =>
-      updateNodeOnLoroEvent(view, event),
-    );
+    docSubscription = state.doc.subscribe(onEvent);
   }
 
   const { strategy } = state;
@@ -275,9 +334,25 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
 
   const mapping = state.mapping;
   clearChangedNodes(state.doc as LoroDocType, event, mapping);
-  const node = state.strategy.read(state, mapping, view.state.schema, {
+  let node = state.strategy.read(state, mapping, view.state.schema, {
     onSchemaViolation: state.onSchemaViolation,
   });
+
+  // The reader returns null both for a root with no blocks and for content
+  // the schema rejects, and the two need opposite handling. A blockless root
+  // is a real state -- undoing back to the pre-typing baseline reaches it --
+  // and must be rendered as an empty document, or the undo appears to do
+  // nothing while Loro has moved. A rejected document must not be replaced
+  // with a blank one. The strategy tells them apart.
+  if (node == null && state.strategy.isEmpty(state)) {
+    node = view.state.schema.topNodeType.createAndFill();
+  }
+  if (node == null) {
+    console.warn(
+      "[LoroSync] skipping update: the document has no valid representation in the schema",
+    );
+    return;
+  }
   // Use saved cursors (captured when PM ↔ Loro were last in sync) rather than
   // converting the current PM selection.  After doc.import() the Loro text
   // already contains the remote characters but the PM document hasn't been

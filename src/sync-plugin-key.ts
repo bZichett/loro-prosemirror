@@ -68,4 +68,11 @@ export interface LoroSyncPluginState extends LoroSyncPluginProps {
   /** Loro stable cursor saved when PM ↔ Loro are in sync (after local edits). */
   savedAnchor?: Cursor;
   savedFocus?: Cursor;
+  /**
+   * Set when init or a write-back threw. Sync is disabled from then on, so a
+   * failing Loro runtime cannot throw on every keystroke; the editor keeps
+   * working on its own document. A consumer can read this to show an error
+   * state.
+   */
+  initError?: string;
 }

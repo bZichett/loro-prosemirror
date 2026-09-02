@@ -84,3 +84,13 @@ export function setupLoroMap(obj: LoroMap, nodeName: string): void {
 export function oneMs(): Promise<void> {
   return new Promise((r) => setTimeout(r));
 }
+
+/** A node map with only its `nodeName`: no `children` or `attributes` container yet. */
+export function insertBareLoroMap(
+  parent: LoroList,
+  nodeName: string,
+): LoroNode {
+  const obj = parent.insertContainer(parent.length, new LoroMap());
+  obj.set("nodeName", nodeName);
+  return obj as unknown as LoroNode;
+}

@@ -256,8 +256,21 @@ export function createNodeFromLoroObj(
   }
 
   if (obj instanceof LoroMap) {
-    const attributes = getLoroMapAttributes(obj);
-    const children = getLoroMapChildren(obj);
+    // Read path: never the creating getters. A time-travel checkout detaches
+    // the document, where any write -- including getOrCreateContainer's
+    // auto-commit -- throws; and a historical frontier can legitimately hold a
+    // node whose nested containers were created in a later commit.
+    //
+    // Missing attributes are an empty attribute set: a root whose attributes
+    // are intentionally empty may never have had the container created.
+    // Missing children are different -- there is nothing to build the node
+    // from -- so the node is dropped (null) and the parent's child filter
+    // removes it.
+    const attrs = tryGetLoroMapAttributes(obj)?.toJSON() ?? {};
+    const children = tryGetLoroMapChildren(obj);
+    if (children === undefined) {
+      return null;
+    }
 
     const nodeName = obj.get("nodeName");
     if (nodeName == null || typeof nodeName !== "string") {
@@ -272,7 +285,7 @@ export function createNodeFromLoroObj(
       .filter((n) => n !== null);
 
     try {
-      retval = schema.node(nodeName, attributes.toJSON(), mappedChildren);
+      retval = schema.node(nodeName, attrs, mappedChildren);
       WEAK_NODE_TO_LORO_CONTAINER_MAPPING.set(retval, obj.id);
     } catch (e) {
       // The merged content is not a sentence in the schema's grammar, which a
