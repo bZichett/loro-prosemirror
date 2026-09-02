@@ -36,10 +36,13 @@ export {
   type RenderOptions,
   type SchemaViolationInfo,
 } from "./lib";
-export type {
-  CursorPluginOptions,
-  CursorPresenceState,
-  CursorUser,
+export {
+  convertPmSelectionToCursors,
+  cursorToAbsolutePosition,
+  resolveCursorPosition,
+  type CursorPluginOptions,
+  type CursorPresenceState,
+  type CursorUser,
 } from "./cursor/common";
 export {
   CursorEphemeralStore,
@@ -48,3 +51,18 @@ export {
 export { CursorAwareness, LoroCursorPlugin } from "./cursor/awareness";
 export { LoroUndoPlugin, undo, redo, canUndo, canRedo } from "./undo-plugin";
 export { loroUndoPluginKey, type LoroUndoPluginProps } from "./undo-plugin-key";
+export { treeStrategy } from "./tree-strategy";
+export {
+  buildLoroTree,
+  createTextNode,
+  getRootTree,
+  TEXT_KEY,
+  TEXT_NODE_NAME,
+  WEAK_NODE_TO_TREE_ID,
+} from "./tree-build";
+export { treeToPmNode } from "./tree-read";
+export { updateLoroTree } from "./tree-diff";
+export {
+  treeCursorToAbsolutePosition,
+  treePositionToCursor,
+} from "./tree-cursor";

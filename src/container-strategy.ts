@@ -1,13 +1,13 @@
 /**
  * How the document is laid out inside the Loro document.
  *
- * The binding has one layout today, a nested `LoroMap` / `LoroList` tree under
- * a single root container. Other layouts are possible — a `LoroTree`, whose
- * native move operation gives conflict-free reparenting, is the motivating
- * case — and they differ in every place the plugin touches the document:
- * writing the editor state in, reading it out, and deciding whether the root
- * is empty. This interface names those places so a layout is chosen once,
- * per plugin instance, instead of being re-detected at each of them.
+ * Two layouts ship: the nested `LoroMap` / `LoroList` tree under a single root
+ * container, which is upstream's and the default, and a `LoroTree`, whose
+ * native move operation gives conflict-free reparenting. They differ in every
+ * place the plugin touches the document — writing the editor state in,
+ * reading it out, deciding whether the root is empty, and translating cursors
+ * — so this interface names those places and a layout is chosen once, per
+ * plugin instance, instead of being re-detected at each of them.
  *
  * A strategy is always handed to the plugin, never discovered by inspecting
  * the document. Discovery is not safe: asking a Loro document for a root of
@@ -15,9 +15,13 @@
  * would corrupt it.
  */
 
-import type { ContainerID } from "loro-crdt";
+import type { ContainerID, Cursor } from "loro-crdt";
 import type { Node, Schema } from "prosemirror-model";
 import type { EditorState } from "prosemirror-state";
+import {
+  absolutePositionToCursor,
+  cursorToAbsolutePosition,
+} from "./cursor/common";
 import {
   createNodeFromLoroObj,
   getRootContainer,
@@ -72,6 +76,27 @@ export interface ContainerStrategy {
   isEmpty(ref: ContainerRef): boolean;
 
   /**
+   * Bind a ProseMirror position to a stable Loro cursor, or undefined when
+   * the position is not on text.
+   */
+  positionToCursor(
+    ref: ContainerRef,
+    pmRootNode: Node,
+    pos: number,
+    mapping: LoroNodeMapping,
+  ): Cursor | undefined;
+
+  /**
+   * Resolve a Loro cursor to an absolute ProseMirror position, with the
+   * updated cursor Loro hands back when the original's position was deleted.
+   */
+  cursorToPosition(
+    ref: ContainerRef,
+    cursor: Cursor,
+    mapping: LoroNodeMapping,
+  ): [number, Cursor | undefined];
+
+  /**
    * Whether the `fastInit` / `fastTextSync` paths apply. They walk the nested
    * Map/List layout directly, so a strategy with a different layout answers
    * false and always takes the full read.
@@ -106,6 +131,20 @@ export const nestedListStrategy: ContainerStrategy = {
       getRootContainer(ref.doc, ref.containerId, ref.rootKey),
     );
     return children !== undefined && children.length === 0;
+  },
+
+  positionToCursor(ref, pmRootNode, pos, mapping) {
+    return absolutePositionToCursor(
+      pmRootNode,
+      pos,
+      ref.doc,
+      mapping,
+      getRootContainer(ref.doc, ref.containerId, ref.rootKey).id,
+    );
+  },
+
+  cursorToPosition(ref, cursor, mapping) {
+    return cursorToAbsolutePosition(cursor, ref.doc, mapping);
   },
 
   fastPaths: true,

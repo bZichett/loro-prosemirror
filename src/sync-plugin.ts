@@ -12,7 +12,7 @@ import type { EditorView } from "prosemirror-view";
 
 import {
   convertPmSelectionToCursors,
-  cursorToAbsolutePosition,
+  resolveCursorPosition,
 } from "./cursor/common";
 import {
   clearChangedNodes,
@@ -433,7 +433,7 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
   // `state.doc` and `mapping` are already updated by clearChangedNodes +
   // createNodeFromLoroObj above, so cursorToAbsolutePosition works here.
   if (anchor != null) {
-    const sel = resolveLoroSelection(tr.doc, state.doc, mapping, anchor, focus);
+    const sel = resolveLoroSelection(tr.doc, state, anchor, focus);
     if (sel) {
       tr = tr.setSelection(sel);
     }
@@ -450,17 +450,14 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
  */
 function resolveLoroSelection(
   pmDoc: PmNode,
-  loroDoc: LoroDocType,
-  mapping: LoroNodeMapping,
+  state: LoroSyncPluginState,
   anchor: Cursor,
   focus?: Cursor,
 ): Selection | null {
-  const anchorPos = cursorToAbsolutePosition(anchor, loroDoc, mapping)[0];
+  const anchorPos = resolveCursorPosition(anchor, state)[0];
   if (anchorPos == null) return null;
 
-  const focusPos = focus
-    ? cursorToAbsolutePosition(focus, loroDoc, mapping)[0]
-    : undefined;
+  const focusPos = focus ? resolveCursorPosition(focus, state)[0] : undefined;
 
   const docSize = pmDoc.content.size;
   const clamp = (pos: number) => Math.max(0, Math.min(pos, docSize));
@@ -493,9 +490,8 @@ export function syncCursorsToPmSelection(
     return;
   }
 
-  const { doc, mapping } = state;
-  const anchorPos = cursorToAbsolutePosition(anchor, doc, mapping)[0];
-  const focusPos = focus && cursorToAbsolutePosition(focus, doc, mapping)[0];
+  const anchorPos = resolveCursorPosition(anchor, state)[0];
+  const focusPos = focus && resolveCursorPosition(focus, state)[0];
   if (anchorPos == null) {
     return;
   }

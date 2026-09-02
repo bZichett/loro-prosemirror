@@ -462,7 +462,7 @@ export function updateLoroText(
  * LoroText content against the PM text and apply ONLY the genuine local changes
  * (new keystrokes) to the appropriate LoroText.
  */
-function reconcileSplitBrainTexts(
+export function reconcileSplitBrainTexts(
   loroTexts: LoroText[],
   pmTextGroup: Node[],
   mapping: LoroNodeMapping,
@@ -519,7 +519,7 @@ function reconcileSplitBrainTexts(
   }
 }
 
-function nodeMarksToAttributes(marks: readonly Mark[]): {
+export function nodeMarksToAttributes(marks: readonly Mark[]): {
   [key: string]: Attrs;
 } {
   const pattrs: { [key: string]: Attrs } = {};
@@ -644,7 +644,7 @@ function eqMappedNode(
   return false;
 }
 
-function normalizeNodeContent(node: Node): (Node | Node[])[] {
+export function normalizeNodeContent(node: Node): (Node | Node[])[] {
   const res: (Node | Node[])[] = [];
   let textNodes: Node[] | null = null;
 

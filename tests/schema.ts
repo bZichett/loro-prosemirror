@@ -24,6 +24,12 @@ const nodes: { [key: string]: NodeSpec } = {
     content: "paragraph block*",
     toDOM: () => ["li", 0],
   },
+  // A block container that may be empty, for a clean cross-parent reparent.
+  section: {
+    content: "block*",
+    group: "block",
+    toDOM: () => ["section", 0],
+  },
   horizontal_rule: {
     group: "block",
     toDOM: () => ["hr"],
