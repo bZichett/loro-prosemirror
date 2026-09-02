@@ -11,6 +11,7 @@ import { convertPmSelectionToCursors } from "./cursor/common";
 import { syncCursorsToPmSelection } from "./sync-plugin";
 import { loroSyncPluginKey } from "./sync-plugin-key";
 import { configLoroTextStyle } from "./text-style";
+import { LoroOrigins, LoroTxMeta } from "./origins";
 import {
   loroUndoPluginKey,
   type LoroUndoPluginProps,
@@ -30,7 +31,9 @@ export const LoroUndoPlugin = (props: LoroUndoPluginProps): Plugin => {
       init: (_config, editorState): LoroUndoPluginState => {
         configLoroTextStyle(props.doc, editorState.schema);
 
-        undoManager.addExcludeOriginPrefix("sys:init");
+        // Exclude the whole `sys:` namespace, not just the `sysInit` value, so a
+        // future `sys:*` origin is never undo-tracked without a code change here.
+        undoManager.addExcludeOriginPrefix(LoroOrigins.sysNamespace);
         return {
           undoManager,
           canUndo: undoManager.canUndo(),
@@ -47,7 +50,9 @@ export const LoroUndoPlugin = (props: LoroUndoPluginProps): Plugin => {
 
         const canUndo = undoState.undoManager.canUndo();
         const canRedo = undoState.undoManager.canRedo();
-        {
+        // A time-travel render replaces the document while Loro is detached;
+        // cursor resolution fails on the checked-out state, so skip it.
+        if (!_tr.getMeta(LoroTxMeta.timeTravelSync)) {
           const { anchor, focus } = convertPmSelectionToCursors(
             oldEditorState.doc,
             oldEditorState.selection,

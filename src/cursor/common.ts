@@ -15,6 +15,7 @@ import {
 
 import {
   CHILDREN_KEY,
+  getRootContainer,
   type LoroDocType,
   type LoroNode,
   type LoroNodeMapping,
@@ -218,17 +219,15 @@ function createDecorations(
       continue;
     }
 
-    const [focus, focusCursorUpdate] = cursorToAbsolutePosition(
+    const [focus, focusCursorUpdate] = resolveCursorPosition(
       cursor.focus,
-      doc as LoroDocType,
-      loroState.mapping,
+      loroState,
     );
     d.push(Decoration.widget(focus, createCursor(peer as PeerID)));
     if (!cursorEq(cursor.anchor, cursor.focus)) {
-      const [anchor, anchorCursorUpdate] = cursorToAbsolutePosition(
+      const [anchor, anchorCursorUpdate] = resolveCursorPosition(
         cursor.anchor,
-        doc as LoroDocType,
-        loroState.mapping,
+        loroState,
       );
       d.push(
         Decoration.inline(
@@ -265,27 +264,50 @@ function createDecorations(
   return decorations;
 }
 
+/**
+ * Bind the selection to Loro cursors through the state's container strategy.
+ * A state built without one — the shape tests hand in — takes the nested
+ * Map/List translation directly.
+ */
 export function convertPmSelectionToCursors(
   pmRootNode: Node,
   selection: Selection,
   loroState: LoroSyncPluginState,
 ) {
-  const anchor = absolutePositionToCursor(
-    pmRootNode,
-    selection.anchor,
-    loroState.doc as LoroDocType,
-    loroState.mapping,
-  );
-  const focus =
-    selection.head == selection.anchor
-      ? anchor
+  const doc = loroState.doc as LoroDocType;
+  const toCursor = (pos: number) =>
+    loroState.strategy
+      ? loroState.strategy.positionToCursor(
+          loroState,
+          pmRootNode,
+          pos,
+          loroState.mapping,
+        )
       : absolutePositionToCursor(
           pmRootNode,
-          selection.head,
-          loroState.doc as LoroDocType,
+          pos,
+          doc,
           loroState.mapping,
+          getRootContainer(doc, loroState.containerId, loroState.rootKey).id,
         );
+  const anchor = toCursor(selection.anchor);
+  const focus =
+    selection.head == selection.anchor ? anchor : toCursor(selection.head);
   return { anchor, focus };
+}
+
+/** Resolve a cursor to a position through the state's container strategy. */
+export function resolveCursorPosition(
+  cursor: Cursor,
+  loroState: LoroSyncPluginState,
+): [number, Cursor | undefined] {
+  return loroState.strategy
+    ? loroState.strategy.cursorToPosition(loroState, cursor, loroState.mapping)
+    : cursorToAbsolutePosition(
+        cursor,
+        loroState.doc as LoroDocType,
+        loroState.mapping,
+      );
 }
 
 function getByValue(map: Map<ContainerID, Node | Node[]>, searchValue: Node) {
@@ -294,28 +316,51 @@ function getByValue(map: Map<ContainerID, Node | Node[]>, searchValue: Node) {
   }
 }
 
-function absolutePositionToCursor(
+/**
+ * Bind a ProseMirror position to a stable cursor on the nested Map/List
+ * layout. `rootContainerId` recovers the document root structurally: its
+ * ProseMirror identity drifts (slice-fit rebuilds the top node on every
+ * `tr.replace`), so the identity lookup misses it whenever the selection's
+ * containing node is the root itself — which it is at the end of any document
+ * whose last block is an atom.
+ */
+export function absolutePositionToCursor(
   pmRootNode: Node,
   anchor: number,
   doc: LoroDocType,
   mapping: LoroNodeMapping,
+  rootContainerId?: ContainerID,
 ): Cursor | undefined {
   const pos = pmRootNode.resolve(anchor);
   const nodeParent = pos.node(pos.depth);
   const offset = pos.parentOffset;
 
-  const loroId =
+  let loroId =
     WEAK_NODE_TO_LORO_CONTAINER_MAPPING.get(nodeParent) ??
     getByValue(mapping, nodeParent);
+  if (!loroId && rootContainerId && nodeParent === pmRootNode) {
+    loroId = rootContainerId;
+    mapping.set(rootContainerId, pmRootNode);
+    WEAK_NODE_TO_LORO_CONTAINER_MAPPING.set(pmRootNode, rootContainerId);
+  }
   if (!loroId) {
     if (anchor > 1) {
-      console.error("Cannot find the loroNode");
+      // Genuinely unmappable at this frontier, e.g. a concurrent edit
+      // mid-flight. A stale cursor is tolerable; a throw is not.
+      console.warn(
+        `[LoroSync] cursor: no Loro container for "${nodeParent.type.name}" — skipping`,
+      );
     }
     return;
   }
 
   const loroMap: LoroNode = doc.getMap(loroId as any);
   const children = loroMap.get(CHILDREN_KEY);
+  if (children == null) {
+    // No `children` container in the current state: reachable on a detached
+    // document checked out to before the container was created.
+    return undefined;
+  }
   if (children.length == 0) {
     // This is a new line, so we can use the list cursor instead
     return children.getCursor(0);
@@ -327,7 +372,13 @@ function absolutePositionToCursor(
     const child = children.get(childIndex);
     childIndex += 1;
     if (child instanceof LoroText) {
-      return child.getCursor(index);
+      // Bind when the offset falls within or at the end of this run;
+      // otherwise consume the run and keep walking. Binding to the first run
+      // unconditionally teleported the caret back across inline atoms.
+      if (index <= child.length) {
+        return child.getCursor(index);
+      }
+      index -= child.length;
     } else {
       if (index == 0) {
         // This happens when user selects an image or a horizontal rule

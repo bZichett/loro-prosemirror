@@ -53,3 +53,38 @@ const plugins = [
   // see above for other plugins
 ];
 ```
+
+### Container layout
+
+By default the document is stored as a nested `LoroMap` / `LoroList` tree under a single root container. Pass `container: treeStrategy` to store it as a `LoroTree` instead, whose native move operation keeps a reparented block's identity — and any concurrent edit inside it — across the move:
+
+```ts
+import { LoroSyncPlugin, treeStrategy } from "loro-prosemirror";
+
+LoroSyncPlugin({ doc, container: treeStrategy });
+```
+
+The layout is a wire-format fact: choose it once per document and hand it in every time. It is never detected from the document, because asking Loro for a root of the wrong kind creates one. `container` also accepts a function of the editor's root node type, so an application can route document kinds to layouts. `fastInit` and `fastTextSync` apply to the nested layout only.
+
+## Observing schema violations
+
+Loro guarantees that concurrent edits converge — not that they converge on a
+document your ProseMirror schema accepts. Two peers can each hold a valid
+document whose merge is a node the schema rejects (for example, a node whose
+`content` expression no longer matches after both sides edited its children).
+
+When that happens the offending node is left out of the ProseMirror document,
+because it cannot be built. It is **kept in the Loro document**, so it is not
+lost and reappears once the conflict resolves. Pass `onSchemaViolation` to be
+told when it happens:
+
+```ts
+LoroSyncPlugin({
+  doc,
+  onSchemaViolation: ({ containerId, nodeName, cause }) => {
+    reportToTelemetry({ containerId, nodeName, cause });
+  },
+});
+```
+
+Without the callback the violation is written to `console.error`.

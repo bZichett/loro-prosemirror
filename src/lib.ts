@@ -15,6 +15,7 @@ import {
 import { type Attrs, Mark, Node, Schema } from "prosemirror-model";
 import { type EditorState, TextSelection } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
+import { LoroOrigins } from "./origins";
 
 export type LoroChildrenListType = LoroList<
   LoroMap<LoroNodeContainerType> | LoroText
@@ -56,6 +57,47 @@ export type LoroType = LoroContainer | Value;
 // See also: https://prosemirror.net/docs/guide/#doc.data_structures
 export type LoroNodeMapping = Map<ContainerID, Node | Node[]>;
 
+/**
+ * Reported when merged CRDT content cannot be expressed in the ProseMirror
+ * schema. The grammar's sublanguage is not closed under merge, so this is a
+ * normal (if rare) outcome of concurrent editing, not a programming error.
+ */
+export interface SchemaViolationInfo {
+  /** The Loro container whose content the schema rejected. */
+  containerId: ContainerID;
+  /** The `nodeName` recorded on the container, when it has one. */
+  nodeName?: string;
+  /** What ProseMirror raised. */
+  cause: unknown;
+}
+
+export interface RenderOptions {
+  /** Called once per container the schema refuses to build a node from. */
+  onSchemaViolation?: (info: SchemaViolationInfo) => void;
+  /** If provided, receives the id of every container that rendered to nothing. */
+  unrenderable?: Set<ContainerID>;
+}
+
+/**
+ * Marker stored in a {@link LoroNodeMapping} for a container that exists in the
+ * Loro document but produced no ProseMirror node, because the merged content
+ * violates the schema.
+ *
+ * It is deliberately kept in the mapping rather than deleted: the write-back
+ * path diffs the ProseMirror doc against the Loro doc and would otherwise read
+ * the absence as a user deletion and destroy the content for every peer.
+ * Compared by identity, so it can never collide with a genuinely empty text.
+ */
+const UNRENDERABLE = Object.freeze([]) as unknown as Node[];
+
+/** Whether `id` names a container that could not be rendered under the schema. */
+export function isUnrenderable(
+  mapping: LoroNodeMapping,
+  id: ContainerID,
+): boolean {
+  return mapping.get(id) === UNRENDERABLE;
+}
+
 export const ROOT_DOC_KEY = "doc";
 export const ATTRIBUTES_KEY = "attributes";
 export const CHILDREN_KEY = "children";
@@ -68,46 +110,145 @@ export const WEAK_NODE_TO_LORO_CONTAINER_MAPPING = new WeakMap<
   ContainerID
 >();
 
+function reportViolation(
+  options: RenderOptions | undefined,
+  containerId: ContainerID,
+  nodeName: string | undefined,
+  cause: unknown,
+) {
+  options?.unrenderable?.add(containerId);
+  if (options?.onSchemaViolation) {
+    options.onSchemaViolation({ containerId, nodeName, cause });
+  } else {
+    console.error(cause);
+  }
+}
+
+/**
+ * Resolve the container holding the document.
+ *
+ * An explicit `containerId` wins; otherwise the document lives in a top-level
+ * container named `rootKey`, defaulting to {@link ROOT_DOC_KEY}.
+ *
+ * The name is part of the wire format — it is baked into every persisted
+ * snapshot and update — so it is an option rather than a constant. That lets an
+ * application keep documents it has already written under a different name, or
+ * place a second top-level container alongside the document.
+ */
+export function getRootContainer(
+  doc: LoroDocType,
+  containerId?: ContainerID,
+  rootKey: string = ROOT_DOC_KEY,
+): LoroMap<LoroNodeContainerType> {
+  if (containerId) {
+    return doc.getContainerById(containerId) as LoroMap<LoroNodeContainerType>;
+  }
+  // `LoroDocType` fixes its root schema to `doc` and `data`, so a name supplied
+  // at runtime is by construction outside that union. Widening to the untyped
+  // `LoroDoc` here is the honest statement: with `rootKey` in play the document
+  // may carry roots the declared schema does not name. The returned container is
+  // still asserted to the node shape, which is what the rest of the file relies
+  // on.
+  return (doc as LoroDoc).getMap(rootKey) as LoroMap<LoroNodeContainerType>;
+}
+
+export interface UpdateLoroOptions {
+  /** See {@link getRootContainer}. Ignored when a `containerId` is given. */
+  rootKey?: string;
+  /**
+   * Commit origin. Defaults to `LoroOrigins.userEdit`, which the UndoManager
+   * tracks; init and recovery writes pass `LoroOrigins.sysInit` to stay off
+   * the undo stack.
+   */
+  origin?: string;
+}
+
+/**
+ * Sync the editor document into Loro.
+ *
+ * The first write to a root also records its `nodeName`. When the enclosing
+ * commit would be undo-tracked, that write is flushed first in its own
+ * `sysInit` commit: otherwise undoing back past it would remove the
+ * `nodeName` and leave a root the reader cannot rebuild. When the caller is
+ * already committing under `sysInit`, the write is folded into the same
+ * commit, so history never holds a bar with a named root and no children —
+ * a state with no valid document representation.
+ *
+ * Every commit mirrors its `origin` into `message`. Loro exposes `message`
+ * but not `origin` to application code through `doc.getAllChanges()`, so the
+ * mirror is the only way a consumer can tell a bootstrap commit from a user
+ * edit when it walks history.
+ */
 export function updateLoroToPmState(
   doc: LoroDocType,
   mapping: LoroNodeMapping,
   editorState: EditorState,
   containerId?: ContainerID,
+  options?: UpdateLoroOptions,
 ) {
   const node = editorState.doc;
-  const map = containerId
-    ? (doc.getContainerById(containerId) as LoroMap<LoroNodeContainerType>)
-    : doc.getMap(ROOT_DOC_KEY);
+  const map = getRootContainer(doc, containerId, options?.rootKey);
+  const origin = options?.origin ?? LoroOrigins.userEdit;
 
-  let isInit = false;
   if (map.get("nodeName") == null) {
-    doc.commit();
-    isInit = true;
     map.set("nodeName", node.type.name);
+    if (origin !== LoroOrigins.sysInit) {
+      doc.commit({ origin: LoroOrigins.sysInit, message: LoroOrigins.sysInit });
+    }
   }
 
   updateLoroMap(map, node, mapping);
-  if (isInit) {
-    doc.commit({ origin: "sys:init" });
-  } else {
-    doc.commit({ origin: "loroSyncPlugin" });
+  doc.commit({ origin, message: origin });
+}
+
+/**
+ * Convert a LoroText into PM text nodes, one per delta span, carrying the
+ * span's attributes as marks.
+ *
+ * A span whose mark the schema does not know, or whose mark attributes are
+ * invalid, is dropped and reported; the rest of the text is kept.
+ */
+export function loroTextToPmTextNodes(
+  schema: Schema,
+  obj: LoroText,
+  options?: RenderOptions,
+): Node[] {
+  const nodes: Node[] = [];
+  for (const delta of obj.toDelta()) {
+    if (delta.insert == null) {
+      continue;
+    }
+    try {
+      const marks: Mark[] = [];
+      for (const [markName, mark] of Object.entries(delta.attributes ?? {})) {
+        const markAttrs = valueToAttrs(mark);
+        marks.push(schema.mark(markName, markAttrs ?? undefined));
+      }
+      nodes.push(schema.text(delta.insert, marks));
+    } catch (e) {
+      reportViolation(options, obj.id, undefined, e);
+    }
   }
+  return nodes;
 }
 
 export function createNodeFromLoroObj(
   schema: Schema,
   obj: LoroNode,
   mapping: LoroNodeMapping,
+  options?: RenderOptions,
 ): Node;
 export function createNodeFromLoroObj(
   schema: Schema,
   obj: LoroText,
   mapping: LoroNodeMapping,
+  options?: RenderOptions,
 ): Node[];
 export function createNodeFromLoroObj(
   schema: Schema,
   obj: LoroNode | LoroText,
   mapping: LoroNodeMapping,
+  options?: RenderOptions,
 ): Node | Node[] | null {
   let retval: Node | Node[] | null = mapping.get(obj.id) ?? null;
   if (retval != null) {
@@ -115,8 +256,21 @@ export function createNodeFromLoroObj(
   }
 
   if (obj instanceof LoroMap) {
-    const attributes = getLoroMapAttributes(obj);
-    const children = getLoroMapChildren(obj);
+    // Read path: never the creating getters. A time-travel checkout detaches
+    // the document, where any write -- including getOrCreateContainer's
+    // auto-commit -- throws; and a historical frontier can legitimately hold a
+    // node whose nested containers were created in a later commit.
+    //
+    // Missing attributes are an empty attribute set: a root whose attributes
+    // are intentionally empty may never have had the container created.
+    // Missing children are different -- there is nothing to build the node
+    // from -- so the node is dropped (null) and the parent's child filter
+    // removes it.
+    const attrs = tryGetLoroMapAttributes(obj)?.toJSON() ?? {};
+    const children = tryGetLoroMapChildren(obj);
+    if (children === undefined) {
+      return null;
+    }
 
     const nodeName = obj.get("nodeName");
     if (nodeName == null || typeof nodeName !== "string") {
@@ -125,37 +279,24 @@ export function createNodeFromLoroObj(
 
     const mappedChildren = children
       .toArray()
-      .flatMap((child) => createNodeFromLoroObj(schema, child as any, mapping))
+      .flatMap((child) =>
+        createNodeFromLoroObj(schema, child as any, mapping, options),
+      )
       .filter((n) => n !== null);
 
     try {
-      retval = schema.node(nodeName, attributes.toJSON(), mappedChildren);
+      retval = schema.node(nodeName, attrs, mappedChildren);
       WEAK_NODE_TO_LORO_CONTAINER_MAPPING.set(retval, obj.id);
     } catch (e) {
-      // An error occurred while creating the node.
-      // This is probably a result of a concurrent action.
-      console.error(e);
+      // The merged content is not a sentence in the schema's grammar, which a
+      // concurrent edit can produce. Report it and mark the container so the
+      // write-back path leaves it alone.
+      reportViolation(options, obj.id, nodeName, e);
+      mapping.set(obj.id, UNRENDERABLE);
+      return null;
     }
   } else if (obj instanceof LoroText) {
-    retval = [];
-    for (const delta of obj.toDelta()) {
-      if (delta.insert == null) {
-        continue;
-      }
-
-      try {
-        const marks = [];
-        for (const [markName, mark] of Object.entries(delta.attributes ?? {})) {
-          const markAttrs = valueToAttrs(mark);
-          marks.push(schema.mark(markName, markAttrs ?? undefined));
-        }
-        retval.push(schema.text(delta.insert, marks));
-      } catch (e) {
-        // An error occurred while creating the node.
-        // This is probably a result of a concurrent action.
-        console.error(e);
-      }
-    }
+    retval = loroTextToPmTextNodes(schema, obj, options);
   } else {
     /* v8 ignore next */
     throw new Error("Invalid LoroType");
@@ -204,6 +345,65 @@ export function createLoroText(
   return obj;
 }
 
+/** Deep-sort object keys so structurally equal values stringify equally. */
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([k, v]) => [k, canonicalize(v)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * A mark set as a comparable string: null-valued keys dropped, keys sorted,
+ * values canonicalised. Loro returns a mark's attributes in a different key
+ * order than ProseMirror wrote them, so a plain stringify would never match.
+ */
+function normalizeAttributes(attributes: Attrs | null | undefined): string {
+  const entries = Object.entries(attributes ?? {})
+    .filter(([, v]) => v != null)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => [k, canonicalize(v)]);
+  return JSON.stringify(entries);
+}
+
+/**
+ * Collapse a span list to `[text, normalizedAttrs]` pairs, merging neighbours
+ * that carry the same attributes. Loro merges adjacent identical-attribute
+ * runs in `toDelta()` while ProseMirror keeps one span per text node, so both
+ * sides must be merged before they can be compared.
+ */
+function mergeSpans(
+  spans: { insert?: string; attributes?: Attrs | null }[],
+): [string, string][] {
+  const out: [string, string][] = [];
+  for (const span of spans) {
+    if (typeof span.insert !== "string" || span.insert.length === 0) continue;
+    const attrs = normalizeAttributes(span.attributes);
+    const last = out[out.length - 1];
+    if (last && last[1] === attrs) {
+      last[0] += span.insert;
+    } else {
+      out.push([span.insert, attrs]);
+    }
+  }
+  return out;
+}
+
+function attributeSpansMatch(
+  actual: Delta<string>[],
+  desired: { insert: string; attributes?: Attrs | null }[],
+): boolean {
+  const a = mergeSpans(actual);
+  const b = mergeSpans(desired);
+  if (a.length !== b.length) return false;
+  return a.every(([text, attrs], i) => b[i][0] === text && b[i][1] === attrs);
+}
+
 export function updateLoroText(
   obj: LoroText,
   nodes: Node[],
@@ -234,6 +434,16 @@ export function updateLoroText(
     obj.insert(index, insert);
   }
 
+  // Loro records a style op even when the asserted mark is already in effect,
+  // and never consolidates the resulting anchors: they persist in the
+  // container state, survive snapshots, and are walked by every styled read.
+  // This runs on every keystroke, so re-asserting unconditionally degrades a
+  // styled paragraph without bound. Skip when the text already carries exactly
+  // the marks that would be asserted; any mismatch takes the full path below.
+  if (attributeSpansMatch(obj.toDelta(), content)) {
+    return;
+  }
+
   obj.applyDelta(
     content.map((c) => ({
       retain: c.insert.length,
@@ -252,7 +462,7 @@ export function updateLoroText(
  * LoroText content against the PM text and apply ONLY the genuine local changes
  * (new keystrokes) to the appropriate LoroText.
  */
-function reconcileSplitBrainTexts(
+export function reconcileSplitBrainTexts(
   loroTexts: LoroText[],
   pmTextGroup: Node[],
   mapping: LoroNodeMapping,
@@ -301,10 +511,7 @@ function reconcileSplitBrainTexts(
   if (insert.length > 0) {
     for (let i = 0; i < loroTexts.length; i++) {
       if (index <= boundaries[i + 1] || i === loroTexts.length - 1) {
-        const localPos = Math.min(
-          index - boundaries[i],
-          loroTexts[i].length,
-        );
+        const localPos = Math.min(index - boundaries[i], loroTexts[i].length);
         loroTexts[i].insert(localPos, insert);
         break;
       }
@@ -312,7 +519,7 @@ function reconcileSplitBrainTexts(
   }
 }
 
-function nodeMarksToAttributes(marks: readonly Mark[]): {
+export function nodeMarksToAttributes(marks: readonly Mark[]): {
   [key: string]: Attrs;
 } {
   const pattrs: { [key: string]: Attrs } = {};
@@ -437,7 +644,7 @@ function eqMappedNode(
   return false;
 }
 
-function normalizeNodeContent(node: Node): (Node | Node[])[] {
+export function normalizeNodeContent(node: Node): (Node | Node[])[] {
   const res: (Node | Node[])[] = [];
   let textNodes: Node[] | null = null;
 
@@ -567,10 +774,40 @@ export function updateLoroMap(
   updateLoroMapChildren(obj, node, mapping);
 }
 
+/**
+ * Read the attributes container of a node without creating it.
+ *
+ * Returns undefined both when the container is absent (legitimate: a
+ * historical frontier predating the key, or intentionally empty attributes)
+ * and when the key holds something that is not a LoroMap (a malformed
+ * document or version skew, which is warned about). Use on read paths that
+ * must not write, such as walking a detached document.
+ */
+export function tryGetLoroMapAttributes(
+  obj: LoroMap,
+): LoroMap<{ [key: string]: string }> | undefined {
+  const existing = obj.get(ATTRIBUTES_KEY);
+  if (existing == null) {
+    return undefined;
+  }
+  if (!(existing instanceof LoroMap)) {
+    console.warn(
+      `[loro-prosemirror] tryGetLoroMapAttributes: "${ATTRIBUTES_KEY}" on container ${obj.id} does not hold a LoroMap — malformed doc or version skew`,
+      existing,
+    );
+    return undefined;
+  }
+  return existing as LoroMap<{ [key: string]: string }>;
+}
+
+/** The attributes container of a node, created if absent. */
 export function getLoroMapAttributes(
   obj: LoroMap,
 ): LoroMap<{ [key: string]: string }> {
-  return obj.getOrCreateContainer(ATTRIBUTES_KEY, new LoroMap());
+  return (
+    tryGetLoroMapAttributes(obj) ??
+    obj.getOrCreateContainer(ATTRIBUTES_KEY, new LoroMap())
+  );
 }
 
 export function updateLoroMapAttributes(
@@ -599,8 +836,33 @@ export function updateLoroMapAttributes(
   }
 }
 
+/**
+ * Read the children container of a node without creating it. Same contract
+ * as {@link tryGetLoroMapAttributes}: undefined for absent or malformed.
+ */
+export function tryGetLoroMapChildren(
+  obj: LoroNode,
+): LoroChildrenListType | undefined {
+  const existing = obj.get(CHILDREN_KEY);
+  if (existing == null) {
+    return undefined;
+  }
+  if (!(existing instanceof LoroList)) {
+    console.warn(
+      `[loro-prosemirror] tryGetLoroMapChildren: "${CHILDREN_KEY}" on container ${obj.id} does not hold a LoroList — malformed doc or version skew`,
+      existing,
+    );
+    return undefined;
+  }
+  return existing as LoroChildrenListType;
+}
+
+/** The children container of a node, created if absent. */
 export function getLoroMapChildren(obj: LoroNode): LoroChildrenListType {
-  return obj.getOrCreateContainer(CHILDREN_KEY, new LoroList());
+  return (
+    tryGetLoroMapChildren(obj) ??
+    obj.getOrCreateContainer(CHILDREN_KEY, new LoroList())
+  );
 }
 
 export function updateLoroMapChildren(
@@ -670,12 +932,22 @@ export function updateLoroMapChildren(
   // child alignment the original shared-index loop assumed.
   let loroLeft = left;
   let pmLeft = left;
-  const loroMidEnd = loroChildLength - right;
-  const pmMidEnd = nodeChildLength - right;
+  // These shrink as the `updateRight` branch consumes children from the right.
+  // They must not be captured as consts: that branch advances neither index,
+  // so a frozen bound makes the loop non-terminating.
+  let loroMidEnd = loroChildLength - right;
+  let pmMidEnd = nodeChildLength - right;
 
   while (loroLeft < loroMidEnd && pmLeft < pmMidEnd) {
     const leftLoro = loroChildren.get(loroLeft);
     const leftNode = nodeChildren[pmLeft];
+
+    // A container that could not be rendered has no ProseMirror counterpart to
+    // align against. Step over it without consuming a ProseMirror child.
+    if (isContainer(leftLoro) && isUnrenderable(mapping, leftLoro.id)) {
+      loroLeft += 1;
+      continue;
+    }
 
     if (leftLoro instanceof LoroText && Array.isArray(leftNode)) {
       // Count consecutive LoroTexts (split-brain detection)
@@ -747,6 +1019,8 @@ export function updateLoroMapChildren(
       } else if (updateRight) {
         updateLoroMap(rightLoro as LoroNode, rightNode as Node, mapping);
         right += 1;
+        loroMidEnd -= 1;
+        pmMidEnd -= 1;
       } else {
         // recreate the element at loroLeft
         const child = loroChildren.get(loroLeft);
@@ -773,12 +1047,24 @@ export function updateLoroMapChildren(
     mapping.delete(loroText.id);
     loroText.delete(0, loroText.length);
   } else if (loroSurplus > 0) {
-    loroChildren
+    const surplus = loroChildren
       .toArray()
-      .slice(loroLeft, loroLeft + loroSurplus)
-      .filter(isContainer)
-      .forEach((type) => mapping.delete((type as LoroContainer).id));
-    loroChildren.delete(loroLeft, loroSurplus);
+      .slice(loroLeft, loroLeft + loroSurplus);
+
+    // Walk backwards so the indices of earlier entries stay valid as we delete.
+    for (let i = surplus.length - 1; i >= 0; i--) {
+      const child = surplus[i];
+      if (isContainer(child)) {
+        // Content we merely failed to render is not content anyone deleted.
+        // Leave it in the CRDT so it survives until the conflict resolves;
+        // deleting it here would destroy it for every peer, permanently.
+        if (isUnrenderable(mapping, child.id)) {
+          continue;
+        }
+        mapping.delete(child.id);
+      }
+      loroChildren.delete(loroLeft + i, 1);
+    }
   }
 
   if (pmLeft < nodeChildLength - right) {

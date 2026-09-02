@@ -39,3 +39,6 @@ dist/**/*
 
 # ignore yarn.lock
 yarn.lock
+
+# Claude Code per-machine state
+.claude/settings.local.json

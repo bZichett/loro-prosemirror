@@ -51,9 +51,7 @@ function flushTimer(): Promise<void> {
 function seedLoro(doc: LoroDocType, text: string) {
   const pm = createEditorState(schema, {
     type: "doc",
-    content: [
-      { type: "paragraph", content: [{ type: "text", text }] },
-    ],
+    content: [{ type: "paragraph", content: [{ type: "text", text }] }],
   });
   const mapping: LoroNodeMapping = new Map();
   updateLoroToPmState(doc, mapping, pm);
@@ -65,10 +63,7 @@ function createPeer(seedText: string) {
   seedLoro(doc, seedText);
   const state = EditorState.create({
     schema,
-    plugins: [
-      LoroSyncPlugin({ doc }),
-      LoroUndoPlugin({ doc }),
-    ],
+    plugins: [LoroSyncPlugin({ doc }), LoroUndoPlugin({ doc })],
   });
   const view = new EditorView(document.createElement("div"), { state });
   return { doc, view };
@@ -79,10 +74,7 @@ function createSyncedPeer(sourceDoc: LoroDoc) {
   sync(sourceDoc, doc);
   const state = EditorState.create({
     schema,
-    plugins: [
-      LoroSyncPlugin({ doc }),
-      LoroUndoPlugin({ doc }),
-    ],
+    plugins: [LoroSyncPlugin({ doc }), LoroUndoPlugin({ doc })],
   });
   const view = new EditorView(document.createElement("div"), { state });
   return { doc, view };
@@ -228,5 +220,20 @@ describe("Undo plugin cursor race condition", () => {
     expect(cursorAfterUndo).toBe(1);
     expect(cursorAfterSync).toBe(1);
     expect(cursorAfterFlush).toBe(1);
+  });
+  // Namespace, not identity: the undo plugin excludes the whole `sys:` prefix
+  // rather than the literal sysInit value, so a system origin that does not
+  // exist yet (a recovery flush, say) stays off the undo stack too. Before the
+  // prefix was widened, only the exact "sys:init" origin was excluded and this
+  // commit landed on the undo stack.
+  test("a sys:* origin beyond the literal sysInit value is excluded from undo", () => {
+    const peer = createPeer("hello world");
+    views.push(peer.view);
+
+    (peer.doc as unknown as LoroDoc).getText("probe").insert(0, "seed");
+    peer.doc.commit({ origin: "sys:recovery" });
+
+    const undoState = loroUndoPluginKey.getState(peer.view.state);
+    expect(undoState?.undoManager.canUndo()).toBe(false);
   });
 });
