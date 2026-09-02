@@ -22,3 +22,18 @@ export const LoroOrigins = {
    *  change. */
   sysNamespace: "sys:",
 } as const;
+
+/**
+ * `Transaction.setMeta(key, value)` keys carrying sync-protocol signals on
+ * the ProseMirror side, as opposed to commit origins on the Loro side.
+ */
+export const LoroTxMeta = {
+  /**
+   * Marks a transaction as an application-driven time-travel render -- a
+   * checkout or restore replacing the document -- rather than a local edit.
+   * The sync plugin skips the write-back for it -- a detached document is
+   * read-only, and a write-back that changed anything would throw -- and the
+   * undo plugin skips cursor conversion against the checked-out state.
+   */
+  timeTravelSync: "time-travel-sync",
+} as const;

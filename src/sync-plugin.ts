@@ -6,6 +6,7 @@ import {
   type Selection,
   type StateField,
   TextSelection,
+  type Transaction,
 } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
 
@@ -28,7 +29,7 @@ import {
 import { resolveContainerStrategy } from "./container-strategy";
 import { buildMappingFromExistingDoc } from "./build-mapping";
 import { tryFastTextSync } from "./incremental-sync";
-import { LoroOrigins } from "./origins";
+import { LoroOrigins, LoroTxMeta } from "./origins";
 import { configLoroTextStyle } from "./text-style";
 import { loroUndoPluginKey } from "./undo-plugin-key";
 
@@ -50,6 +51,18 @@ type PluginTransactionType =
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Whether a transaction originated outside the sync layer and so needs a
+ * write-back. Remote updates, state init, and a time-travel render marked
+ * `LoroTxMeta.timeTravelSync` are all Loro-managed: writing them back would
+ * echo Loro to itself, or mutate a detached, read-only document and throw.
+ */
+function isNonLoroManaged(tr: Transaction): boolean {
+  if (tr.getMeta(LoroTxMeta.timeTravelSync)) return false;
+  const meta = tr.getMeta(loroSyncPluginKey) as PluginTransactionType | null;
+  return meta?.type !== "non-local-updates" && meta?.type !== "update-state";
 }
 
 export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
@@ -149,14 +162,7 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
       },
     } as StateField<LoroSyncPluginState>,
     appendTransaction: (transactions, _oldEditorState, newEditorState) => {
-      if (
-        transactions.some(
-          (tr) =>
-            tr.docChanged &&
-            tr.getMeta(loroSyncPluginKey)?.type !== "non-local-updates" &&
-            tr.getMeta(loroSyncPluginKey)?.type !== "update-state",
-        )
-      ) {
+      if (transactions.some((tr) => tr.docChanged && isNonLoroManaged(tr))) {
         return newEditorState.tr.setMeta(loroSyncPluginKey, {
           type: "doc-changed",
         });
@@ -311,6 +317,10 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
   const state = loroSyncPluginKey.getState(view.state) as LoroSyncPluginState;
   state.changedBy = event.by;
   if (event.by === "local" && event.origin !== LoroOrigins.undo) {
+    return;
+  }
+  if (event.by === "checkout" && state.externalCheckout) {
+    // The application owns checkout rendering (see `externalCheckout`).
     return;
   }
 

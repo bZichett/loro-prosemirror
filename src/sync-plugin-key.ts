@@ -44,6 +44,13 @@ export interface LoroSyncPluginProps {
    */
   fastTextSync?: boolean;
   /**
+   * The application renders time-travel checkouts itself, marking each such
+   * render with `LoroTxMeta.timeTravelSync`. When true the plugin ignores
+   * `checkout` events instead of rebuilding the document from the checked-out
+   * state, so the two renders cannot race. Default false.
+   */
+  externalCheckout?: boolean;
+  /**
    * Called when merged content cannot be expressed in the editor's schema, so
    * the affected node is left out of the ProseMirror document.
    *
