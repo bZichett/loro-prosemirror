@@ -1,0 +1,14 @@
+{
+  "$schema": "../laddice-v2/test/test-runner/suites.schema.json",
+  "suites": [
+    {
+      "name": "loro-prosemirror",
+      "category": "TS",
+      "path": ".",
+      "command": "pnpm",
+      "args": ["exec", "vitest", "run"],
+      "framework": "vitest",
+      "tags": ["unit", "ts"]
+    }
+  ]
+}
