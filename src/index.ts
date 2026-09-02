@@ -4,10 +4,16 @@ export {
   type LoroSyncPluginProps,
   type LoroSyncPluginState,
 } from "./sync-plugin-key";
+export { LoroOrigins } from "./origins";
+export { buildMappingFromExistingDoc } from "./build-mapping";
+export { tryFastTextSync } from "./incremental-sync";
 export {
   createNodeFromLoroObj,
   getRootContainer,
   isUnrenderable,
+  loroTextToPmTextNodes,
+  tryGetLoroMapAttributes,
+  tryGetLoroMapChildren,
   updateLoroToPmState,
   ROOT_DOC_KEY,
   NODE_NAME_KEY,

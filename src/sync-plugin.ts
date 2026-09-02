@@ -1,4 +1,4 @@
-import type { Cursor, LoroEventBatch, LoroMap } from "loro-crdt";
+import type { Cursor, LoroEventBatch } from "loro-crdt";
 import { Fragment, type Node as PmNode, Slice } from "prosemirror-model";
 import {
   type EditorState,
@@ -18,7 +18,6 @@ import {
   createNodeFromLoroObj,
   getRootContainer,
   type LoroDocType,
-  type LoroNodeContainerType,
   type LoroNodeMapping,
   safeSetSelection,
   updateLoroToPmState,
@@ -28,6 +27,9 @@ import {
   type LoroSyncPluginProps,
   type LoroSyncPluginState,
 } from "./sync-plugin-key";
+import { buildMappingFromExistingDoc } from "./build-mapping";
+import { tryFastTextSync } from "./incremental-sync";
+import { LoroOrigins } from "./origins";
 import { configLoroTextStyle } from "./text-style";
 import { loroUndoPluginKey } from "./undo-plugin-key";
 
@@ -103,7 +105,7 @@ export const LoroSyncPlugin = (props: LoroSyncPluginProps): Plugin => {
           case "update-state":
             state = { ...state, ...meta.state };
             state.doc.commit({
-              origin: "sys:init",
+              origin: LoroOrigins.sysInit,
               timestamp: Date.now(),
             });
             break;
@@ -201,15 +203,26 @@ function init(view: EditorView) {
       state: { mapping, docSubscription, snapshot: null },
     });
     view.dispatch(tr);
+  } else if (
+    state.fastInit &&
+    buildMappingFromExistingDoc(innerDoc, view.state.doc, mapping)
+  ) {
+    // The editor's document already matches Loro, so the mapping was built by
+    // walking both without replacing the document, and plugin decorations
+    // survive. A transaction with no steps keeps the same document instance.
+    const tr = view.state.tr.setMeta(loroSyncPluginKey, {
+      type: "update-state",
+      state: { mapping, docSubscription, snapshot: null },
+    });
+    view.dispatch(tr);
   } else {
+    // A failed fast-init walk may have partially filled the mapping.
+    mapping.clear();
     const schema = view.state.schema;
     // Create node from loro object
-    const node = createNodeFromLoroObj(
-      schema,
-      innerDoc as LoroMap<LoroNodeContainerType>,
-      mapping,
-      { onSchemaViolation: state.onSchemaViolation },
-    );
+    const node = createNodeFromLoroObj(schema, innerDoc, mapping, {
+      onSchemaViolation: state.onSchemaViolation,
+    });
     const tr = view.state.tr.replace(
       0,
       view.state.doc.content.size,
@@ -230,8 +243,26 @@ function updateNodeOnLoroEvent(view: EditorView, event: LoroEventBatch) {
 
   const state = loroSyncPluginKey.getState(view.state) as LoroSyncPluginState;
   state.changedBy = event.by;
-  if (event.by === "local" && event.origin !== "undo") {
+  if (event.by === "local" && event.origin !== LoroOrigins.undo) {
     return;
+  }
+
+  if (state.fastTextSync) {
+    try {
+      if (tryFastTextSync(view, event, state)) {
+        return;
+      }
+    } catch (err) {
+      // The fast path verifies itself and bails cleanly on any check it can
+      // anticipate; an exception is something it did not. The full rebuild
+      // below reads Loro as the source of truth, so it recovers from any
+      // state the partial attempt left behind.
+      console.warn(
+        "[LoroSync] fast text sync failed, falling back to full rebuild:",
+        err,
+      );
+      state.mapping.clear();
+    }
   }
 
   const mapping = state.mapping;

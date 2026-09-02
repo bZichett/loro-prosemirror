@@ -20,6 +20,20 @@ export interface LoroSyncPluginProps {
    */
   rootKey?: string;
   /**
+   * On init, when the editor's document already matches the Loro document
+   * structurally, build the container mapping by walking the two in parallel
+   * instead of replacing the document. Plugin decorations survive. Falls back
+   * to the ordinary full rebuild on any mismatch. Default false.
+   */
+  fastInit?: boolean;
+  /**
+   * Apply remote plain-text edits as targeted ProseMirror steps instead of
+   * rebuilding the document, so cursors and decorations are remapped by
+   * ProseMirror rather than reset. Falls back to the ordinary full rebuild
+   * whenever an eligibility check fails. Default false.
+   */
+  fastTextSync?: boolean;
+  /**
    * Called when merged content cannot be expressed in the editor's schema, so
    * the affected node is left out of the ProseMirror document.
    *

@@ -15,6 +15,7 @@ import {
 import { type Attrs, Mark, Node, Schema } from "prosemirror-model";
 import { type EditorState, TextSelection } from "prosemirror-state";
 import type { EditorView } from "prosemirror-view";
+import { LoroOrigins } from "./origins";
 
 export type LoroChildrenListType = LoroList<
   LoroMap<LoroNodeContainerType> | LoroText
@@ -170,10 +171,41 @@ export function updateLoroToPmState(
 
   updateLoroMap(map, node, mapping);
   if (isInit) {
-    doc.commit({ origin: "sys:init" });
+    doc.commit({ origin: LoroOrigins.sysInit });
   } else {
-    doc.commit({ origin: "loroSyncPlugin" });
+    doc.commit({ origin: LoroOrigins.userEdit });
   }
+}
+
+/**
+ * Convert a LoroText into PM text nodes, one per delta span, carrying the
+ * span's attributes as marks.
+ *
+ * A span whose mark the schema does not know, or whose mark attributes are
+ * invalid, is dropped and reported; the rest of the text is kept.
+ */
+export function loroTextToPmTextNodes(
+  schema: Schema,
+  obj: LoroText,
+  options?: RenderOptions,
+): Node[] {
+  const nodes: Node[] = [];
+  for (const delta of obj.toDelta()) {
+    if (delta.insert == null) {
+      continue;
+    }
+    try {
+      const marks: Mark[] = [];
+      for (const [markName, mark] of Object.entries(delta.attributes ?? {})) {
+        const markAttrs = valueToAttrs(mark);
+        marks.push(schema.mark(markName, markAttrs ?? undefined));
+      }
+      nodes.push(schema.text(delta.insert, marks));
+    } catch (e) {
+      reportViolation(options, obj.id, undefined, e);
+    }
+  }
+  return nodes;
 }
 
 export function createNodeFromLoroObj(
@@ -227,25 +259,7 @@ export function createNodeFromLoroObj(
       return null;
     }
   } else if (obj instanceof LoroText) {
-    retval = [];
-    for (const delta of obj.toDelta()) {
-      if (delta.insert == null) {
-        continue;
-      }
-
-      try {
-        const marks = [];
-        for (const [markName, mark] of Object.entries(delta.attributes ?? {})) {
-          const markAttrs = valueToAttrs(mark);
-          marks.push(schema.mark(markName, markAttrs ?? undefined));
-        }
-        retval.push(schema.text(delta.insert, marks));
-      } catch (e) {
-        // A mark the schema does not know, or invalid mark attributes. Drop
-        // this delta but keep the rest of the text.
-        reportViolation(options, obj.id, undefined, e);
-      }
-    }
+    retval = loroTextToPmTextNodes(schema, obj, options);
   } else {
     /* v8 ignore next */
     throw new Error("Invalid LoroType");
@@ -654,10 +668,40 @@ export function updateLoroMap(
   updateLoroMapChildren(obj, node, mapping);
 }
 
+/**
+ * Read the attributes container of a node without creating it.
+ *
+ * Returns undefined both when the container is absent (legitimate: a
+ * historical frontier predating the key, or intentionally empty attributes)
+ * and when the key holds something that is not a LoroMap (a malformed
+ * document or version skew, which is warned about). Use on read paths that
+ * must not write, such as walking a detached document.
+ */
+export function tryGetLoroMapAttributes(
+  obj: LoroMap,
+): LoroMap<{ [key: string]: string }> | undefined {
+  const existing = obj.get(ATTRIBUTES_KEY);
+  if (existing == null) {
+    return undefined;
+  }
+  if (!(existing instanceof LoroMap)) {
+    console.warn(
+      `[loro-prosemirror] tryGetLoroMapAttributes: "${ATTRIBUTES_KEY}" on container ${obj.id} does not hold a LoroMap — malformed doc or version skew`,
+      existing,
+    );
+    return undefined;
+  }
+  return existing as LoroMap<{ [key: string]: string }>;
+}
+
+/** The attributes container of a node, created if absent. */
 export function getLoroMapAttributes(
   obj: LoroMap,
 ): LoroMap<{ [key: string]: string }> {
-  return obj.getOrCreateContainer(ATTRIBUTES_KEY, new LoroMap());
+  return (
+    tryGetLoroMapAttributes(obj) ??
+    obj.getOrCreateContainer(ATTRIBUTES_KEY, new LoroMap())
+  );
 }
 
 export function updateLoroMapAttributes(
@@ -686,8 +730,33 @@ export function updateLoroMapAttributes(
   }
 }
 
+/**
+ * Read the children container of a node without creating it. Same contract
+ * as {@link tryGetLoroMapAttributes}: undefined for absent or malformed.
+ */
+export function tryGetLoroMapChildren(
+  obj: LoroNode,
+): LoroChildrenListType | undefined {
+  const existing = obj.get(CHILDREN_KEY);
+  if (existing == null) {
+    return undefined;
+  }
+  if (!(existing instanceof LoroList)) {
+    console.warn(
+      `[loro-prosemirror] tryGetLoroMapChildren: "${CHILDREN_KEY}" on container ${obj.id} does not hold a LoroList — malformed doc or version skew`,
+      existing,
+    );
+    return undefined;
+  }
+  return existing as LoroChildrenListType;
+}
+
+/** The children container of a node, created if absent. */
 export function getLoroMapChildren(obj: LoroNode): LoroChildrenListType {
-  return obj.getOrCreateContainer(CHILDREN_KEY, new LoroList());
+  return (
+    tryGetLoroMapChildren(obj) ??
+    obj.getOrCreateContainer(CHILDREN_KEY, new LoroList())
+  );
 }
 
 export function updateLoroMapChildren(
