@@ -345,6 +345,65 @@ export function createLoroText(
   return obj;
 }
 
+/** Deep-sort object keys so structurally equal values stringify equally. */
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+        .map(([k, v]) => [k, canonicalize(v)]),
+    );
+  }
+  return value;
+}
+
+/**
+ * A mark set as a comparable string: null-valued keys dropped, keys sorted,
+ * values canonicalised. Loro returns a mark's attributes in a different key
+ * order than ProseMirror wrote them, so a plain stringify would never match.
+ */
+function normalizeAttributes(attributes: Attrs | null | undefined): string {
+  const entries = Object.entries(attributes ?? {})
+    .filter(([, v]) => v != null)
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([k, v]) => [k, canonicalize(v)]);
+  return JSON.stringify(entries);
+}
+
+/**
+ * Collapse a span list to `[text, normalizedAttrs]` pairs, merging neighbours
+ * that carry the same attributes. Loro merges adjacent identical-attribute
+ * runs in `toDelta()` while ProseMirror keeps one span per text node, so both
+ * sides must be merged before they can be compared.
+ */
+function mergeSpans(
+  spans: { insert?: string; attributes?: Attrs | null }[],
+): [string, string][] {
+  const out: [string, string][] = [];
+  for (const span of spans) {
+    if (typeof span.insert !== "string" || span.insert.length === 0) continue;
+    const attrs = normalizeAttributes(span.attributes);
+    const last = out[out.length - 1];
+    if (last && last[1] === attrs) {
+      last[0] += span.insert;
+    } else {
+      out.push([span.insert, attrs]);
+    }
+  }
+  return out;
+}
+
+function attributeSpansMatch(
+  actual: Delta<string>[],
+  desired: { insert: string; attributes?: Attrs | null }[],
+): boolean {
+  const a = mergeSpans(actual);
+  const b = mergeSpans(desired);
+  if (a.length !== b.length) return false;
+  return a.every(([text, attrs], i) => b[i][0] === text && b[i][1] === attrs);
+}
+
 export function updateLoroText(
   obj: LoroText,
   nodes: Node[],
@@ -373,6 +432,16 @@ export function updateLoroText(
   }
   if (insert.length) {
     obj.insert(index, insert);
+  }
+
+  // Loro records a style op even when the asserted mark is already in effect,
+  // and never consolidates the resulting anchors: they persist in the
+  // container state, survive snapshots, and are walked by every styled read.
+  // This runs on every keystroke, so re-asserting unconditionally degrades a
+  // styled paragraph without bound. Skip when the text already carries exactly
+  // the marks that would be asserted; any mismatch takes the full path below.
+  if (attributeSpansMatch(obj.toDelta(), content)) {
+    return;
   }
 
   obj.applyDelta(
