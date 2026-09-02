@@ -4,16 +4,17 @@
 
 ## What this repo is
 
-A clone of upstream [`loro-dev/loro-prosemirror`](https://github.com/loro-dev/loro-prosemirror) with a personal fork remote:
+A fork of upstream [`loro-dev/loro-prosemirror`](https://github.com/loro-dev/loro-prosemirror), canonical on GitLab with a GitHub mirror:
 
-| Remote | URL | Role |
-| --- | --- | --- |
-| `origin` | `https://github.com/loro-dev/loro-prosemirror` | upstream, read-only |
-| `fork` | `git@github.com:bZichett/loro-prosemirror.git` | ours — push here |
+| Remote     | URL                                    | Role                                                      |
+| ---------- | -------------------------------------- | --------------------------------------------------------- |
+| `origin`   | `gitlab.com/enfilad/loro-prosemirror`  | canonical — push here (also pushes to the GitHub mirror)  |
+| `github`   | `github.com/bZichett/loro-prosemirror` | mirror; the only copy a Claude Code web sandbox can clone |
+| `upstream` | `github.com/loro-dev/loro-prosemirror` | upstream, read-only                                       |
 
-**This repo is becoming the single source for Laddice's ProseMirror↔Loro binding.** Today it is not yet: production runs a diverged hard fork of `0.4.3` that lives in a *different* repository — `packages/loro-prosemirror/` in `laddice-v2` (GitLab, `laddice/root`), consumed by four packages as `"loro-prosemirror": "workspace:*"`. Locally that sits at `../../laddice-v2/packages/loro-prosemirror`.
+**This repo is the single source for Laddice's ProseMirror↔Loro binding.** Every behaviour the downstream hard fork carried has been absorbed here with its tests (complete 2026-09-02); what remains is the consumer flip. Until then production still runs that fork — `packages/loro-prosemirror/` in `laddice-v2` (GitLab, `laddice/root`), consumed by four packages as `"loro-prosemirror": "workspace:*"`, locally at `../../laddice-v2/packages/loro-prosemirror`. Once the consumers point here and the editor E2E tier passes, that directory is deleted. Tracked in `laddice-v2` at `docs/plans/loro-prosemirror-converge-on-vendor.md`.
 
-The plan is to absorb that fork's divergences into this repo, then flip the consumer onto this as a real dependency and delete it. Tracked in `laddice-v2` at `docs/plans/loro-prosemirror-converge-on-vendor.md`.
+Everything Laddice needed landed as an option that defaults to upstream behaviour: `rootKey`, `container` (the `LoroTree` layout, `treeStrategy`), `fastInit`, `fastTextSync`, `externalCheckout`, `collaboration`, `seedFromEditor`, `onSchemaViolation`. Keep it that way — a divergence behind a defaulted seam is what makes pulling upstream fixes cheap.
 
 This is also the **only copy a Claude Code web sandbox can reach** — sandboxes clone from GitHub, and the consumer is on GitLab. That reachability is why convergence lands here rather than the other way round.
 
@@ -21,20 +22,20 @@ This is also the **only copy a Claude Code web sandbox can reach** — sandboxes
 
 **Work moves up into this repo, and stops moving down.** Two modes, so establish which you are in:
 
-- **Absorbing** a behavior that already exists downstream — port it *with its tests*, and expect the target file to look different from the source. Do not assume the downstream implementation is the right shape here; it was written against a tree that had already diverged.
+- **Absorbing** a behavior that already exists downstream — port it _with its tests_, and expect the target file to look different from the source. Do not assume the downstream implementation is the right shape here; it was written against a tree that had already diverged.
 - **New work** — write it here first. It no longer needs a downstream twin, and adding one deepens the divergence this plan exists to close.
 
 Either way, shape the diff for someone re-applying it against a different file, because until the dependency flips that is still what happens:
 
 - One concern per commit, and a test commit before the fix commit. The test is the part that ports cleanly and proves the port landed.
 - Prefer a new self-contained module over threading logic through `sync-plugin.ts` or `lib.ts` — the two most-diverged files, and the two most expensive to reconcile.
-- Put the *why* in the commit body. The porter reads the message, not this working tree.
+- Put the _why_ in the commit body. The porter reads the message, not this working tree.
 
 ## Downstream divergences you will meet
 
 Do not assume upstream's shape when absorbing. The full per-file inventory — which divergences are upstreamable, fork-only, or blocking — is in `../../laddice-v2/docs/external-libraries/loro.md`. The one that bites hardest:
 
-**`ROOT_DOC_KEY` is `"tree"` downstream, not upstream's `"doc"`.** The consumer's dual-container model puts `tree` (the PM document) and `ranges` (a CRDT-backed annotation overlay) side by side as top-level LoroMaps. This is a **wire-format fact** — persisted snapshots and the Dart binding both assume `tree` — so it cannot be settled by adopting upstream's name. The intended resolution is making the root key configurable rather than renamed.
+**`ROOT_DOC_KEY` is `"tree"` downstream, not upstream's `"doc"`.** The consumer's dual-container model puts `tree` (the PM document) and `ranges` (a CRDT-backed annotation overlay) side by side as top-level containers. This is a **wire-format fact** — persisted snapshots and the Dart binding both assume `tree` — so it is not settled by adopting upstream's name. Resolved here by the `rootKey` prop: the consumer passes `"tree"`, the default stays `"doc"`. Likewise the consumer's editorial documents are a `LoroTree` under that key while conversations are the nested layout; that is the `container` selector, chosen by the consumer from the root node type and never detected from the document.
 
 ## Do not port dependency bumps downward
 
